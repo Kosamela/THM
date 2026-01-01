@@ -1,2 +1,6 @@
 # THM
-My writeups and steps for challenges
+## Challenges
+
+- [ElBandito](ElBandito.md)
+
+- [WhatsYourName](WhatsYourName.md)
