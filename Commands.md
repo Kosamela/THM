@@ -4,19 +4,29 @@
 sudo find / -name ".env.local" -type f 2>/dev/null
 ```
 ## Grep
-```
 Extended Regular Expression
+```
 grep -E ''
+```
 \ (Wyjscie ze znaku specjalnego) omija znaki akcji.
 | (Alternatywa): Szuka jednego lub drugiego wzorca.
-Przykład: grep -E "Failed|Accepted" /var/log/auth.log (znajdzie próby logowania udane i nieudane).
-+ (Jeden lub więcej): Dopasowuje co najmniej jedno wystąpienie poprzedniego znaku.
-Przykład: grep -E "log+" (znajdzie "log", "logg", "loggg").
-? (Zero lub jedno): Sprawia, że poprzedni znak jest opcjonalny.
-Przykład: grep -E "https?" (znajdzie zarówno "http", jak i "https").
-{n,m} (Kwantyfikatory): Pozwala określić dokładną liczbę powtórzeń.
-Przykład: grep -E "[0-9]{1,3}" (szuka od jednej do trzech cyfr).
+``` (znajdzie próby logowania udane i nieudane).
+grep -E "Failed|Accepted" /var/log/auth.log
 ```
+
++ (Jeden lub więcej): Dopasowuje co najmniej jedno wystąpienie poprzedniego znaku.
+```(znajdzie "log", "logg", "loggg").
+grep -E "log+"
+```
+? (Zero lub jedno): Sprawia, że poprzedni znak jest opcjonalny.
+``` (znajdzie zarówno "http", jak i "https").
+grep -E "https?"
+``` 
+{n,m} (Kwantyfikatory): Pozwala określić dokładną liczbę powtórzeń.
+```(szuka od jednej do trzech cyfr).
+grep -E "[0-9]{1,3}" 
+```
+
 ## Notatki
 ### Detection 1: A Spike of Discovery Commands
 ```
