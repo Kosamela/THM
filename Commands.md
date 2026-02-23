@@ -1,4 +1,4 @@
-#Overall
+# Overall
 ## Find
 ```
 sudo find / -name ".env.local" -type f 2>/dev/null
@@ -27,13 +27,13 @@ grep -E "https?"
 grep -E "[0-9]{1,3}"
 #(szuka od jednej do trzech cyfr).
 ```
-##xxd
-###Podstawowy podgląd
+## xxd
+### Podstawowy podgląd
 ```
 xxd plik.bin
 # Wyświetla: Offset | Hex | ASCII
 ```
-###Magic Bytes (Identyfikacja typu pliku)
+### Magic Bytes (Identyfikacja typu pliku)
 ```
 xxd -l 16 plik.bin
 # -l [długość]: Wypisuje tylko określoną liczbę bajtów. Pozwala sprawdzić nagłówek (np. ELF, PNG).
@@ -43,17 +43,17 @@ xxd -l 16 plik.bin
 xxd -p plik.txt
 # Wypisuje tylko wartości hex, bez offsetów i ASCII. Przydatne do skryptów.
 ```
-###Zmiana formatowania kolumn
+### Zmiana formatowania kolumn
 ```
 xxd -c 8 plik.bin
 #-c [liczba]: Określa, ile bajtów ma być w jednej linii (domyślnie 16). Pomaga dopasować widok.
 ```
-###Reverse - odzyskiwanie pliku ze zrzutu
+### Reverse - odzyskiwanie pliku ze zrzutu
 ```
 xxd -r zrzut_hex.txt > plik_wynikowy.bin
 #Zamienia tekstowy zapis hex z powrotem na plik binarny.
 ```
-###Eksport do tablicy C
+### Eksport do tablicy C
 ```
 xxd -i plik.bin
 #Formatuje zawartość jako zmienną typu char[] (idealne do wrzucania shellcode do exploita).
@@ -109,8 +109,8 @@ ausearch -i --ppid 27808 | grep proctitle # List all its child processes
 ```
 ausearch -i -f /etc/systemd # Look for file changes inside /etc/systemd
 ```
-##Notatki
-###Sprawdzenie, czy skrypt nie ukrywa w sobie bajtów wykonywalnych:
+## Notatki
+### Sprawdzenie, czy skrypt nie ukrywa w sobie bajtów wykonywalnych:
 ```
 xxd suspicious_script.sh | head -n 20
 ```
