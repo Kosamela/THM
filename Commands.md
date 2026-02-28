@@ -109,6 +109,58 @@ ausearch -i --ppid 27808 | grep proctitle # List all its child processes
 ```
 ausearch -i -f /etc/systemd # Look for file changes inside /etc/systemd
 ```
+## WINDOWS
+### Sprawdzenie hash pliku
+```
+Get-FileHash -Algorithm SHA256 .\file.exe
+```
+```
+certutil -hashfile filename.exe SHA256
+```
+### Strings Windowsowy
+```
+Select-String -Path .\file.txt -Pattern "http"
+```
+```
+findstr /i "password" file.txt
+```
+### Metadata atrybuty
+```
+Get-Item .\suspicious_file.exe | Select-Object *
+```
+### Sprawdzenie podpisu
+```
+Get-AuthenticodeSignature .\installer.exe
+```
+### Windowsowy grep
+```
+Select-String
+Select-String -Path "C:\Logs\access.log" -Pattern "admin" -CaseSensitive
+Get-Process | Select-String "sql" # Sprawdz wszystkie procesy, które mają SQL
+```
+### Hex
+```
+Format-Hex .\file.exe | select -first 5
+```
+### DLL
+```
+tasklist /m # zrzut wszystkich uzywanych DLL
+tasklist /m /fi "IMAGENAME eq notepad.exe" # Sprawdzamy jakie DLL uzywa notepad
+tasklist /m /fi "modules eq malicious.dll" # Sprawdzamy w jakich programach jest uzywany dany DLL
+```
+### CertUtil
+#### Dekodowanie b64 pliku
+```
+certutil -decode
+```
+#### Encodowanie do b64
+```
+certutil -encode
+```
+#### Ściąganie pliku
+```
+certutil -urlcache -split -f "http://url" C:\Users\Public\payload.exe
+```
 ## Notatki
 ### Sprawdzenie, czy skrypt nie ukrywa w sobie bajtów wykonywalnych:
 ```
