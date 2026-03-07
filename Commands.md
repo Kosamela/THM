@@ -172,11 +172,19 @@ xxd suspicious_script.sh | head -n 20
 ```
 
 
-Przesuń o wyraz do przodu, Alt + F,Forward \n
-Przesuń o wyraz do tyłu, Alt + B,Backward \n 
-Przesuń na początek linii, Ctrl + A,A – pierwsza litera alfabetu \n
-Przesuń na koniec linii, Ctrl + E,End \n 
-Usuń wyraz do tyłu, Ctrl + W (lub Alt + Backspace),Word (usuwa słowo w lewo) \n
-Usuń wyraz do przodu ,Alt + D,Delete (usuwa słowo w prawo) \n
-Usuń wszystko na lewo, Ctrl + U,Undo (od kursora do początku) \n
-Usuń wszystko na prawo, Ctrl + K,Kill (od kursora do końca) \n
+Przesuń o wyraz do przodu, Alt + F,Forward
+
+Przesuń o wyraz do tyłu, Alt + B,Backward
+
+Przesuń na początek linii, Ctrl + A,A – pierwsza litera alfabetu
+
+Przesuń na koniec linii, Ctrl + E,End 
+
+Usuń wyraz do tyłu, Ctrl + W (lub Alt + Backspace),Word (usuwa słowo w lewo) 
+
+Usuń wyraz do przodu ,Alt + D,Delete (usuwa słowo w prawo) 
+
+Usuń wszystko na lewo, Ctrl + U,Undo (od kursora do początku) 
+
+Usuń wszystko na prawo, Ctrl + K,Kill (od kursora do końca) 
+
