@@ -27,6 +27,10 @@ grep -E "https?"
 grep -E "[0-9]{1,3}"
 #(szuka od jednej do trzech cyfr).
 ```
+\b oznacza samodzielne słowa, tutaj wymusza, żeby znajdował tylko 3literowe.wielo.3literowe
+```
+grep -Eo "\b[a-z]{3}\.[a-z0-9]+\.[a-z]{3}\b"
+```
 ## xxd
 ### Podstawowy podgląd
 ```
