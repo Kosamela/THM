@@ -31,6 +31,16 @@ grep -E "[0-9]{1,3}"
 ```
 grep -Eo "\b[a-z]{3}\.[a-z0-9]+\.[a-z]{3}\b"
 ```
+## Olevba
+Wyciąga makro VBA
+```
+olevba <nazwapliku>
+```
+## Volatility
+Do wyciągania info z zrzutu pamięci RAM
+```
+vol -f memorydump.raw -h # wyprintuje liste dostepnych modulow
+```
 ## xxd
 ### Podstawowy podgląd
 ```
