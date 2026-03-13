@@ -72,8 +72,17 @@ xxd -r zrzut_hex.txt > plik_wynikowy.bin
 xxd -i plik.bin
 #Formatuje zawartość jako zmienną typu char[] (idealne do wrzucania shellcode do exploita).
 ```
-
-
+## HashExtender
+### https://github.com/iagox86/hash_extender
+Jeżeli znamy hash końcowy pliku 1.png, możemy dodać do jego nazwy dodatkowy ciąg znaków, nie zmieniając oryginalnego hasha <signature>
+### --data: Specifies the original data to be signed ("1.png").
+### --signature: Supplies the original hash signature for "1.png".
+### --append: Adds the new data to be appended ("/../4.png").
+### --out-data-format=html: Formats the output in HTML to mimic a modified web request.
+### --format md5 do zmiany formatu
+```
+./hash_extender --data 1.png --signature 02d101c0ac898f9e69b7d6ec1f84a7f0d784e59bbbe057acb4cef2cf93621ba9 --append /../4.png --out-data-format=html #SHA256
+```
 ## Notatki
 ### Detection 1: A Spike of Discovery Commands
 ```
