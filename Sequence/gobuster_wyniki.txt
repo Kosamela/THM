@@ -1,0 +1,14 @@
+index.php           [32m (Status: 200)[0m [Size: 1694]
+contact.php         [32m (Status: 200)[0m [Size: 2246]
+login.php           [32m (Status: 200)[0m [Size: 1944]
+uploads             [36m (Status: 301)[0m [Size: 318][34m [--> http://10.114.179.101/uploads/][0m
+header.php          [32m (Status: 200)[0m [Size: 1400]
+mail                [36m (Status: 301)[0m [Size: 315][34m [--> http://10.114.179.101/mail/][0m
+chat.php            [36m (Status: 302)[0m [Size: 0][34m [--> login.php][0m
+db.php              [32m (Status: 200)[0m [Size: 0]
+javascript          [36m (Status: 301)[0m [Size: 321][34m [--> http://10.114.179.101/javascript/][0m
+logout.php          [36m (Status: 302)[0m [Size: 0][34m [--> index.php][0m
+settings.php        [36m (Status: 302)[0m [Size: 0][34m [--> login.php][0m
+dashboard.php       [36m (Status: 302)[0m [Size: 1400][34m [--> login.php][0m
+phpmyadmin          [36m (Status: 301)[0m [Size: 321][34m [--> http://10.114.179.101/phpmyadmin/][0m
+server-status       [33m (Status: 403)[0m [Size: 279]
