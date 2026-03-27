@@ -1,4 +1,12 @@
 # Overall
+## Nmap
+```
+nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt ip
+```
+## Gobuster
+```
+gobuster dir -u http://10.113.166.1 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
+```
 ## Find
 ```
 sudo find / -name ".env.local" -type f 2>/dev/null
