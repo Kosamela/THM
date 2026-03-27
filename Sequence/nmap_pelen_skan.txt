@@ -1,0 +1,24 @@
+# Nmap 7.98 scan initiated Fri Mar 27 08:35:33 2026 as: /usr/lib/nmap/nmap --privileged --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.114.179.101
+Nmap scan report for 10.114.179.101
+Host is up (0.032s latency).
+Not shown: 65533 closed tcp ports (reset)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.3 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   3072 10:0a:6d:89:fd:48:40:63:a2:77:6c:7a:2c:ab:27:af (RSA)
+|   256 19:d6:0b:b1:69:9e:54:3d:48:62:37:fd:e2:61:4f:0b (ECDSA)
+|_  256 18:96:b6:8d:88:96:4c:ed:03:7a:0b:32:6d:8c:0e:1a (ED25519)
+80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+| http-methods: 
+|_  Supported Methods: GET HEAD POST OPTIONS
+| http-cookie-flags: 
+|   /: 
+|     PHPSESSID: 
+|_      httponly flag not set
+|_http-server-header: Apache/2.4.41 (Ubuntu)
+|_http-title: Review Shop
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Read data files from: /usr/share/nmap
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+# Nmap done at Fri Mar 27 08:35:54 2026 -- 1 IP address (1 host up) scanned in 20.60 seconds
