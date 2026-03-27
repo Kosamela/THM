@@ -1,0 +1,19 @@
+# Nmap 7.95 scan initiated Tue Mar 24 14:52:21 2026 as: /usr/lib/nmap/nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.113.166.1
+Nmap scan report for 10.113.166.1
+Host is up (0.035s latency).
+Not shown: 65533 closed tcp ports (reset)
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 9.6p1 Ubuntu 3ubuntu13.11 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   256 75:ff:78:72:fe:70:34:08:b2:9a:f2:23:ff:33:c2:90 (ECDSA)
+|_  256 f9:a5:b8:4c:7a:c2:c6:98:16:ac:65:40:29:b7:58:c9 (ED25519)
+80/tcp open  http    Apache httpd 2.4.58 ((Ubuntu))
+|_http-server-header: Apache/2.4.58 (Ubuntu)
+|_http-title: TryBookMe - Online Library
+| http-methods: 
+|_  Supported Methods: GET HEAD POST OPTIONS
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Read data files from: /usr/share/nmap
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+# Nmap done at Tue Mar 24 14:52:49 2026 -- 1 IP address (1 host up) scanned in 27.61 seconds
