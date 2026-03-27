@@ -48,7 +48,7 @@ phpmyadmin           (Status: 301) [Size: 321] [--> http://10.114.179.101/phpmya
 ```
 ## 3. Initial Access
 
-Checked out normal usage of website. Login is classical, contact - XSS may be viable for 3rd party person to launch it. 
+Checked out normal usage of website. Login is classical, contact - XSS may be viable for 3rd party person to launch it.  
 /mail sub had something nice for us, a txt file:
 ```
 From: software@review.thm
