@@ -3,6 +3,23 @@
 ```
 sudo find / -name ".env.local" -type f 2>/dev/null
 ```
+## Git
+Sprawdzajka dla zmian w plikach
+```
+git status
+```
+Dodanie zmian do "koszyka" (Staging)
+```
+git add nazwa_folderu/plik.md
+```
+Zatwierdzenie zmian (Commit)
+```
+git commit -m "Opis zmian"
+```
+Wypchnięcie na serwer (Push)
+```
+git push origin main
+```
 ## Grep
 Extended Regular Expression
 \ (Wyjscie ze znaku specjalnego) omija znaki akcji.
