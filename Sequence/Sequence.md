@@ -69,10 +69,7 @@ Regards,
 Robert
 ```
 Seems like a very useful thing when we get into internal. Maybe thats a docker?
-```python
-# Example script used
-python3 exploit.py -u 10.114.131.93
-```
+
 
 ## 4. Privilege Escalation
 
