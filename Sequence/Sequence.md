@@ -68,8 +68,13 @@ I will be away on holiday but will be back soon.
 Regards,  
 Robert
 ```
-Seems like a very useful thing when we get into internal. Maybe thats a docker?
+Credentials found in /mail: S60u}f5j (Potential user: robert or software).
 
+Internal Files discovered: /finance.php, /lottery.php.
+
+Potential Architecture: Internal network 192.x (possible Docker environment or SSRF vulnerability).
+
+http://10.114.131.93/phpmyadmin/ 
 
 ## 4. Privilege Escalation
 
