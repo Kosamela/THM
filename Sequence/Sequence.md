@@ -74,10 +74,10 @@ Seems like a very useful thing when we get into internal. Maybe thats a docker?
 ## 4. Privilege Escalation
 
 ### User Flag
-How did you stabilize the shell and get the `user.txt` file?
+
 
 ### Root Flag (System / Administrator)
-After getting on the machine, I started gathering system information using `sudo -l` (or looking for SUID binaries).
+
 
 ## 5. Summary and Lessons Learned
 
