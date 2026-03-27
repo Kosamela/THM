@@ -28,6 +28,10 @@ Wypchnięcie na serwer (Push)
 ```
 git push origin main
 ```
+Zassanie z serwera na lokal
+```
+git pull origin main
+```
 ## Grep
 Extended Regular Expression
 \ (Wyjscie ze znaku specjalnego) omija znaki akcji.
