@@ -1,6 +1,6 @@
 # THM
 ## Challenges
 
-- [ElBandito](ElBandito.md)
+- [ElBandito](ElBandito/ElBandito.md)
 
-- [WhatsYourName](WhatsYourName.md)
+- [WhatsYourName](Whatsyourname/WhatsYourName.md)
