@@ -125,14 +125,14 @@ Im kinda sure it wasn't supposed to go this way, it had to do something with CSR
   `THM{Adm1NPawned007}`
 </details>
 Now, as we are an admin, we have an access to new features hidden in main dashboard. It goes for lottery one, but it seems that one is down. So, we intercept new feature request and modify it to go for finance.php (the one we found in mail dumb)
-![alt text](image.png)
+<img width="561" height="386" alt="image" src="image.png" />
 And we do get an access to uploads. Lets craft a reverse shell in php.
-![alt text](image-1.png)
+<img width="561" height="386" alt="image" src="image-1.png" />
 Thats the uploaded path for it. We will runn it the same like we did with finance.php - using feature tab and modyfing the request.
 We do have a shell, lets upgrade it! https://0xffsec.com/handbook/shells/full-tty/
-![alt text](image-2.png)
+<img width="561" height="386" alt="image" src="image-2.png" />
 DOcker kurwa
-### Root Flag (System / Administrator)
+
 
 
 ## 5. Summary and Lessons Learned
