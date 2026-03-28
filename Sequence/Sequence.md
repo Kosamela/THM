@@ -17,7 +17,9 @@ Initial machine scanning to identify open ports and running services.
 # Nmap Scan
 nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.114.131.93
 ```
-
+"",
+" **Full Nmap scan log:** [nmap_pelen_skan.txt](./nmap_pelen_skan.txt)",
+"",
 **Full Nmap scan log:** [nmap_pelen_skan.txt](./nmap_pelen_skan.txt)
 
 **Key Findings:**
