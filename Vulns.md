@@ -17,11 +17,8 @@ popen('id') - funkcja z biblioteki os, która otwiera proces i wykonuje komendę
 read() - odczytuje wynik (output) z terminala, żeby mógł się wyświetlić na stronie.
 
 Silnik Pythona pozwala na zapisywanie tekstów (stringów) w postaci kodów szesnastkowych, poprzedzając każdą literę znakiem \x.
-
 Litera o to w hex 6f. Więc w Pythonie '\x6f' to to samo co 'o'.
-
 Litera s to w hex 73. Więc w Pythonie '\x73' to to samo co 's'.
-
 Zatem słowo 'os' to '\x6f\x73'.
 
 Zastępujemy każdy pojedynczy string w naszym ładunku jego szesnastkowym odpowiednikiem. Nawiasy, słowo self i wywołania () zostawiamy w spokoju, bo to one tworzą strukturę gramatyczną, która mówi serwerowi: "hej, wykonaj ten kod".
