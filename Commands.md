@@ -91,6 +91,16 @@ Linie okalajace
 ```
 grep -C 5 "cos"
 ```
+## Netstat
+```
+-a	show both listening and non-listening sockets
+-l	show only listening sockets
+-n	show numeric output instead of resolving the IP address and port number
+-t	TCP
+-u	UDP
+-x	UNIX
+-p	Show the PID and name of the program to which the socket belongs
+```
 ## Olevba
 Wyciąga makro VBA
 ```
