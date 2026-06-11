@@ -7,6 +7,7 @@ awk -F'[][]' '{print $2}' rpc_wynik.txt > users.txt
 -F'[][]' — ustawia znaki [ oraz ] jako separatory kolumn.
 '{print $2}' — mówi systemowi: "wypisz tylko drugą kolumnę" (czyli to, co znajduje się między pierwszym [, a pierwszym ]).
 > users.txt — zapisuje wynik prosto do nowego pliku.
+
 ## Nmap
 ```
 nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt ip
@@ -202,6 +203,16 @@ Password Spray Attack
 ```
 crackmapexec smb 10.211.11.20 -u users.txt -p passwords.txt
 ```
+## DNSenum
+```
+dnsenum megacorp.com
+```
+## DNSrecon
+```
+dnsrecon -d megacorp.com -t std 
+dnsrecon -d megacorp.com -D ~/list.txt -t brt
+```
+-t okresla metode, tj. std standard, brt brute
 ## impacket
 ### getnpusers
 Impacket provides a flexible Python script (GetNPUsers.py) to enumerate accounts in non-Windows environments. To test for the pre-authentication vulnerability, you must supply a users.txt file containing usernames.
