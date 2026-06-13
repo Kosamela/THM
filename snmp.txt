@@ -1,0 +1,8 @@
+# Nmap 7.99 scan initiated Sat Jun 13 07:08:13 2026 as: /usr/lib/nmap/nmap --privileged -p 25 -sU --open -oG snmp.txt 192.168.107.0/24
+Host: 192.168.107.17 ()	Status: Up
+Host: 192.168.107.17 ()	Ports: 25/open|filtered/udp//smtp///
+Host: 192.168.107.23 ()	Status: Up
+Host: 192.168.107.23 ()	Ports: 25/open|filtered/udp//smtp///
+Host: 192.168.107.254 ()	Status: Up
+Host: 192.168.107.254 ()	Ports: 25/open|filtered/udp//smtp///
+# Nmap done at Sat Jun 13 07:08:20 2026 -- 256 IP addresses (17 hosts up) scanned in 7.19 seconds
