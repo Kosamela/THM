@@ -1,4 +1,8 @@
 # Overall
+## bashowo
+```bash
+for ip in $(seq 64 79); do host 167.114.21.$ip; done | grep -Ev "not found|timed out"
+```
 ## awk
 Wycinanie interesujacej nas tresci z pliku
 ```
@@ -269,6 +273,17 @@ If succesful, we can go through its console.
 500 is the Administrator account, 501 is the Guest account and 512-514 are for the following groups:  Domain Admins, Domain users and Domain guests. User accounts typically start from RID 1000 onwards.
 ```
 for i in $(seq 500 2000); do user=$(echo "queryuser $i" | rpcclient -U "" -N 10.211.11.10 2>/dev/null | grep -i "User Name"); if [ -n "$user" ]; then echo "[RID: $i] $user"; fi; done
+```
+## smb
+POrt 139 netbios (kom w lanie, stare wersje ptorzebuja)
+POrt 445 smb
+```
+sudo nbtscan -r 192.168.50.0/24
+# -r specyfikacja na netbios 137
+```
+```
+nmap -v -p 139,445 --script smb
+# duzo skryptow pod smb ma nmap
 ```
 ## SMBCLIENT
 You can use it to list, upload, download, and browse files on a remote SMB server.
@@ -699,6 +714,11 @@ A powerful Windows-based tool designed explicitly for Kerberos-related security 
 https://github.com/GhostPack/Rubeus
 ```
 Rubeus.exe asreproast
+```
+## smb windows
+Enumeracja
+```
+net view \\dc01 /all
 ```
 ## Notatki
 ### Encoding
