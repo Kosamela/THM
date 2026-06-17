@@ -262,6 +262,11 @@ User information on dc
 ```
 ldapsearch -x -H ldap://ip -b "dc=tryhackme,dc=loc" "(objectClass=person)"
 ```
+## Nessus
+```bash
+sudo systemctl start nessusd.service
+```
+https://127.0.0.1:8834
 ## rpcclient
 Microsoft Remote Procedure Call (MSRPC) is a protocol that enables a program running on one computer to request services from a program on another computer thru SMB.
 ```
@@ -299,6 +304,28 @@ Reconnaissance tool that enumerates SMB shares across a host. It can be used to 
 ```
 smbmap -H TARGET_IP
 ```
+## SNMP walk
+MIB Table - tam sa kody 
+```
+snmpwalk -c public -v1 -t 10 192.168.50.151
+```
+This command enumerates the entire MIB tree using the -c option to specify the community string, and -v to specify the SNMP version number, as well as the -t 10 option to increase the timeout period to 10 seconds.
+```
+snmpwalk -c public -v1 192.168.50.151 1.3.6.1.4.1.77.1.2.25
+```
+Enumerate windows users
+```
+snmpwalk -c public -v1 192.168.50.151 1.3.6.1.2.1.25.4.2.1.2
+```
+Enumerate windows processes
+```
+snmpwalk -c public -v1 192.168.50.151 1.3.6.1.2.1.25.6.3.1.2
+```
+ENumerate windows software
+```
+snmpwalk -c public -v1 192.168.50.151 1.3.6.1.2.1.6.13.1.3
+```
+TCP Ports
 ## SQLMAP
 Do edycji zmienne jak nazwa submita, pola username i password
 ```
@@ -719,6 +746,15 @@ Rubeus.exe asreproast
 Enumeracja
 ```
 net view \\dc01 /all
+```
+## Webshell
+Reverse na winde
+```bash
+cp /usr/share/powershell-empire/empire/server/data/module_source/management/powercat.ps1 .
+```
+Sprawdzanie czy na hoscie wykonuje sie przez CMD czy Powershell
+```bash
+(dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell
 ```
 ## Notatki
 ### Encoding
