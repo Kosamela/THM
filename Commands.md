@@ -220,6 +220,16 @@ lsblk
 ```bash
 find / -perm -u=s -type f 2>/dev/null
 ```
+### User trails
+* Sometimes system administrators store credentials inside environment variables as a way to interact with custom scripts that require authentication.
+```bash
+env
+```
+* Interestingly, the SCRIPT_CREDENTIALS variable holds a value that resembles a password. To confirm that we are dealing with a permanent variable, we need to inspect the .bashrc configuration file.
+```bash
+cat .bashrc
+```
+
 ####  drivers and kernel modules
 ```bash
 lsmod
