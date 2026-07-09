@@ -229,7 +229,16 @@ env
 ```bash
 cat .bashrc
 ```
-
+### Service footprints
+* We can enumerate all the running processes with the ps command and since it only takes a single snapshot of the active processes, we can refresh it using the watch command. In the following example, we will run the ps command every second via the watch utility and grep the results on any occurrence of the word "pass".
+```bash
+watch -n 1 "ps -aux | grep pass"
+```
+#### Network
+Let's try to capture traffic in and out of the loopback interface, then dump its content in ASCII using the -A parameter. Ultimately, we want to filter any traffic containing the "pass" keyword.
+```bash
+sudo tcpdump -i lo -A | grep "pass"
+```
 ####  drivers and kernel modules
 ```bash
 lsmod
