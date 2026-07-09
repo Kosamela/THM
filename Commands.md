@@ -392,10 +392,46 @@ Get-LocalGroup
 ``` 
 – Odpowiednik powyższego dla PowerShella.
 ```
+Get-LocalGroupMember <nazwa>
+```
+Czlonkowie grupy
+```
 net localgroup Administrators
 ``` 
 – Wyświetla dokładną listę użytkowników, którzy mają uprawnienia administracyjne.
-
+### WLaczanie jak user
+```bash
+runas /user:dave powershell
+Start-Process powershell -Verb runAs
+```
+### Szukanie informacji
+```bash
+Get-ChildItem -Path C:\Users\ -Include *.txt,*.pdf,*.xls,*.xlsx,*.doc,*.docx -File -Recurse -ErrorAction SilentlyContinue
+```
+```bash
+type C:\Users\dave\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
+```
+### Service hijacking
+```bash
+Get-CimInstance -ClassName win32_service | Select Name,State,PathName | Where-Object {$_.State -like 'Running'}
+```
+Sprawdzenie startu serwisu
+```bash
+Get-CimInstance -ClassName win32_service | Select Name, StartMode | Where-Object {$_.Name -like 'mysql'}
+```
+### DLL Hijacking
+```bash
+Get-ItemProperty "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" | select DisplayName, InstallLocation
+```
+process monitor zeby wiedziec gdzie
+### Unquoted Service PAths
+```bash
+Get-CimInstance -ClassName win32_service | Select Name,State,PathName
+```
+```bash
+wmic service get name,pathname |  findstr /i /v "C:\Windows\\" | findstr /i /v """
+```
+ 
 ### Informacje o systemie operacyjnym (Na czym pracujemy?)
 ```
 systeminfo | findstr /B /C:"OS Name" /C:"OS Version" /C:"System Type"
