@@ -15,7 +15,7 @@ python3 Scripts/playbook_html.py     # Playbook.md -> Playbook.html
 - **Kontrola przed buildem** — bloki kodu muszą być domknięte: liczba linii z potrójnym backtickiem ma być parzysta — sprawdzam ````grep -c '^```' Playbook.md````. Dopiero potem przebudowuję HTML.
 
 ### Materiały źródłowe
-Rozbudowuję z modułów OSCP/PEN-200 w `/home/kali/Offsec/Materialy/` (tytuły sekcji w tych plikach to `**N.N. Title**`, kod w fenced-blokach). ⚠️ Plik o omijaniu antywirusów (*evasion / bypassing antivirus*) **pomijam** przy pracy z AI — wywala real-time cyber-safeguard i ubija sesję.
+Rozbudowuję z modułów OSCP/PEN-200 w `/home/kali/Offsec/Materialy/` (tytuły sekcji w tych plikach to `**N.N. Title**`, kod w fenced-blokach).
 
 ## Challenges
 
