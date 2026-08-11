@@ -995,6 +995,40 @@ curl -X PUT -d '{"password":"newpass"}' -H 'Content-Type: application/json' \
 ```
 > Sprawdzaj: **IDOR/BOLA** (podmień ID w ścieżce), brak autoryzacji na `/admin/*`, **JWT** (`jwt_tool`, słaby sekret → `hashcat -m 16500`), nadmiarowe pola w JSON. Zawsze `curl -i` — czytaj nagłówki i kody.
 
+## 2.16 AV/EDR evasion — koncepcja (BEZ gotowców)
+
+> ⚠️ Sekcja **wyłącznie teoretyczna** — po co, jak działa detekcja i dlaczego cradle „cicho pada" (§2.14). ŚWIADOMIE bez działających payloadów/injektorów: gotowce evasion nie trafiają do tego playbooka. Do wykrywania tych technik → §11.6. Tylko w ramach autoryzowanego zaangażowania.
+
+> 🎯 **Drogowskaz — dlaczego payload pada i gdzie:** 1) **na dysku** przy zapisie/skanie → detekcja sygnaturowa + statyczna heurystyka. 2) **przy uruchomieniu skryptu** (PowerShell/JS/VBA/makro) → **AMSI** przekazuje treść do AV *już po deobfuskacji*. 3) **w pamięci / przy zachowaniu** → EDR na behawiorze (injection API, nietypowe drzewo procesów, unhooking). Każdy poziom to inny czujnik — „przeszło przez jeden" nie znaczy „przeszło przez wszystkie.
+> 💎 **Wniosek praktyczny (OSCP):** zamiast walczyć z AV — najpierw sprawdź, czy w ogóle jest (`Get-MpComputerStatus`), i czy masz autoryzację by go tknąć. Często prostsze: **living-off-the-land** (narzędzia już zaufane w systemie), payload dopasowany do platformy (§2.14 recon), wykonanie w pamięci zamiast pliku na dysku.
+
+**Trzy warstwy detekcji — co realnie patrzy (do zrozumienia, nie do obejścia):**
+
+| Warstwa | Kiedy działa | Na co reaguje |
+|---|---|---|
+| **Sygnaturowa** | plik ląduje na dysku | znane bajty/hash (np. surowy output msfvenom bez zmian) |
+| **Statyczna heurystyka** | przed uruchomieniem | podejrzane ciągi, importy API, entropia (spakowane/zaszyfrowane) |
+| **AMSI** | uruchomienie skryptu | treść skryptu **po** deobfuskacji — dlatego samo base64/`-enc` nie wystarcza |
+| **Behawioralna / EDR** | w trakcie działania | wzorce: alokacja RWX, injection do obcego procesu, `powershell` odpalony przez `winword.exe` |
+| **Machine Learning / cloud** | plik nieznany | metadane próbki wysłane do chmury (Defender: klient→cloud ML) — łapie *nieznane* warianty; wymaga internetu (często brak na wewn. serwerach) |
+
+**Silniki AV (co konkretnie skanuje — model OffSec §15.1):** *File engine* (skan on-disk: zaplanowany + real-time przez **mini-filter driver** w kernelu — dlatego łapie zapis pliku) · *Memory engine* (podejrzane API/sygnatury w pamięci procesu → injection) · *Network engine* (ruch C2) · *Disassembler* + *Emulator/Sandbox* (rozpakowuje packer/crypter i odpala próbkę w izolacji) · *Browser plugin* · *ML engine*. AV działa **i w kernelu, i w user-landzie** — stąd trudno „ominąć wszystko naraz".
+
+**Dlaczego cradle z §2.14 potrafi paść (mapowanie na warstwy):**
+- surowy `IEX(New-Object Net.WebClient).DownloadString(...)` → łapie **AMSI** (widzi rozpakowany string) + heurystyka.
+- payload zapisany plikiem na dysk → **sygnatura** jeszcze przed wykonaniem.
+- reverse shell wstrzykiwany do procesu → **EDR** na behawiorze (to właśnie te `VirtualAlloc`/`CreateRemoteThread`, które łapiemy detekcyjnie w §11.6).
+
+> 💎 **Dwie obserwacje z §15 OffSec (praktyczne):** 1) **hash-only to słaba sygnatura** — zmiana JEDNEGO bitu w pliku daje zupełnie inny SHA256, więc detekcja po samym hashu jest krucha (stąd AV używa też wzorców binarnych/stringów, nie tylko hasha; do własnych reguł: **YARA**, do sprawdzenia próbki: **VirusTotal** — ale upload = oddajesz próbkę do publicznej bazy). 2) **świeży payload > nieaktualna sygnatura** — po nowej wersji Metasploita/narzędzia jest okno, zanim vendor dopisze i wypchnie sygnaturę; zaktualizowany atakujący bywa chwilowo niewykrywany. To argument do raportu: „poleganie wyłącznie na sygnaturach zostawia okno detekcyjne".
+
+**Kategorie technik evasion — nazewnictwo do raportu i CVE-checku (świadomie bez implementacji):**
+- *On-disk*: obfuskacja/enkodowanie źródła, packing/crypting, podmiana template'u — vs sygnatura/heurystyka.
+- *In-memory*: wykonanie bez zapisu na dysk (fileless) — omija skan on-write.
+- *AMSI*: techniki celujące w płaszczyznę skanowania skryptów — dlatego blue-team monitoruje integralność AMSI (§11.6).
+- *EDR unhooking / behavior*: omijanie hooków user-mode — vs telemetria kernel/ETW.
+
+> ℹ️ **Rozpoznanie środowiska (legalne, nieofensywne):** `Get-MpComputerStatus` (Defender wł.?), `Get-MpPreference | Select Exclusion*` (ścieżki wykluczone ze skanu — częsty misconfig do zaraportowania), `sc query windefend`, lista usług EDR w procesach. To enumeracja, nie obejście.
+
 ---
 
 # 3. Post-Exploitation — Situational Awareness
@@ -2413,6 +2447,191 @@ Ukryte bajty wykonywalne w skrypcie:
 ```bash
 xxd suspicious_script.sh | head -n 20
 ```
+
+## 11.4 Windows — USB / nośniki wymienne (jakie artefakty zostają, jak wykryć)
+
+> Strona OBRONNA/FORENSIC: co system zapisuje przy podpięciu nośnika i przy kopiowaniu danych — do triage'u „czy ktoś wyniósł dane na USB". To są miejsca, które analityk czyta; jednocześnie pokazują, dlaczego „ukrycie śladów" jest w praktyce niepełne (śladów jest wiele i w różnych miejscach).
+
+> 🎯 **Drogowskaz — triage USB:** 1) **czy w ogóle był nośnik** → rejestr `USBSTOR`/`USB` (model, VID/PID, seriale). 2) **kiedy pierwszy/ostatni raz** → `setupapi.dev.log` + Partition/Diagnostic. 3) **jaka litera dysku / kto podłączył** → `MountedDevices` + DriverFrameworks-UserMode (per user SID). 4) **czy KOPIOWANO pliki** → to wymaga *wcześniej* włączonego audytu obiektów (SACL) → Security 4663; bez tego zostają tylko poszlaki (`$MFT`, LNK, Jump Lists, `RecentDocs`).
+> 💎 **Co wartościowe:** seryjny numer urządzenia (koreluje z konkretnym pendrivem) · SID użytkownika, który je zamontował · timestampy pierwszego podpięcia · dowód kopiowania (4663) jeśli audyt był włączony.
+
+**Krok 1 — Które urządzenia USB storage były kiedykolwiek podpięte (rejestr, offline lub live):**
+```cmd
+:: Lista wszystkich nośników masowych USB (model + rewizja są w nazwie klucza)
+reg query "HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR" /s
+
+:: Wszystkie urządzenia USB (nie tylko storage) — tu siedzą VID_xxxx&PID_xxxx i seriale
+reg query "HKLM\SYSTEM\CurrentControlSet\Enum\USB" /s
+```
+To samo w PowerShell, czytelniej (nazwa + numer seryjny):
+```powershell
+Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR\*\*" |
+  Select-Object FriendlyName, PSChildName    # PSChildName = numer seryjny urządzenia
+```
+> ℹ️ Jeśli **drugi znak** numeru seryjnego to `&`, seriala nadał sam Windows (urządzenie nie ma własnego) — słabszy dowód korelacji z konkretnym egzemplarzem.
+
+**Krok 2 — Kiedy urządzenie pierwszy/ostatni raz podpięto (setupapi + Partition/Diagnostic):**
+```powershell
+# Pierwsza instalacja sterownika urządzenia = pierwsze podpięcie (szukaj po VID/PID lub serialu)
+Select-String -Path C:\Windows\INF\setupapi.dev.log -Pattern "USBSTOR" -Context 0,3
+
+# Log diagnostyczny partycji rejestruje montowania nośników (model dysku, rozmiar)
+Get-WinEvent -LogName "Microsoft-Windows-Partition/Diagnostic" |
+  Where-Object Id -eq 1006 |
+  Select-Object TimeCreated, @{n='Model';e={$_.Properties[10].Value}}
+```
+
+**Krok 3 — Kto (który SID) i jaka litera dysku:**
+```cmd
+:: Mapowanie wolumin -> litera dysku / GUID (koreluj z numerem seryjnego z kroku 1)
+reg query "HKLM\SYSTEM\MountedDevices"
+```
+```powershell
+# Podpięcie/odpięcie nośnika per użytkownik (log jest w kontekście SID-a usera)
+Get-WinEvent -LogName "Microsoft-Windows-DriverFrameworks-UserMode/Operational" |
+  Where-Object Id -in 2003,2100,2102 |
+  Select-Object TimeCreated, Id, UserId, Message
+```
+> ⚠️ Log `DriverFrameworks-UserMode/Operational` bywa **domyślnie wyłączony** — jeśli pusty, sprawdź `wevtutil gl "Microsoft-Windows-DriverFrameworks-UserMode/Operational"` (pole `enabled:`). Włączenie na przyszłość: `wevtutil sl ".../Operational" /e:true`.
+
+**Krok 4 — Czy pliki faktycznie skopiowano na nośnik (wymaga audytu OBIEKTÓW):**
+```powershell
+# Zadziała TYLKO jeśli wcześniej włączono audyt dostępu do obiektów + SACL na plikach/folderach.
+# 4663 = próba dostępu do obiektu; filtruj po ścieżce docelowej = litera pendrive'a.
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4663} |
+  Where-Object { $_.Message -match ' E:\\' } |            # E: = litera nośnika z kroku 3
+  Select-Object TimeCreated, @{n='User';e={$_.Properties[1].Value}},
+                @{n='Object';e={$_.Properties[6].Value}}
+```
+Jak włączyć audyt na przyszłość (żeby 4663 w ogóle powstawało):
+```cmd
+:: 1) polityka: audyt dostępu do plików
+auditpol /set /subcategory:"File System" /success:enable /failure:enable
+:: 2) SACL na wrażliwym folderze (audytuj zapis/odczyt dla Everyone)
+:: (GUI: Właściwości -> Zabezpieczenia -> Zaawansowane -> Inspekcja) lub icacls:
+icacls "C:\Dane_wrazliwe" /setintegritylevel High
+```
+> 💎 **Bez audytu 4663** dowód kopiowania jest pośredni: świeże wpisy w `$MFT`/`$UsnJrnl` na wolumenie nośnika, pliki `.lnk` w `Recent`, `RecentDocs` w rejestrze usera, Jump Lists (`AutomaticDestinations`). To już analiza dysku (Autopsy / KAPE / Eric Zimmerman tools), nie same logi.
+
+## 11.5 Windows — wykrywanie manipulacji przy Event Logach (log tampering)
+
+> Strona OBRONNA: jak analityk POZNAJE, że ktoś czyścił/wyłączał logi. Samo czyszczenie zostawia własny, głośny ślad — to go wykorzystujemy. Do raportu z pentestu: „brak alertu na 1102" opisuje się jako finding (patrz §14).
+
+> 🎯 **Drogowskaz — hunt na tampering:** 1) **jawne wyczyszczenie** → Security **1102** i System **104** (to ZDARZENIA, które powstają właśnie przy czyszczeniu — nie da się ich uniknąć czyszcząc). 2) **zatrzymanie usługi EventLog** → System 7035/7036 + luka czasowa. 3) **dziura w ciągłości** → rosnące `RecordId` z nagłym skokiem / brakiem godzin. 4) **osłabienie audytu** → 4719 (zmiana polityki audytu), 1100 (zamknięcie usługi logowania). 5) **Sysmon** jeśli wdrożony → EID 1 (proces `wevtutil cl`, `Clear-EventLog`, `Remove-EventLog`).
+> 💎 **Co wartościowe:** czas 1102 + SID/konto, które czyściło · nazwa hosta · korelacja: „luka w logach dokładnie w oknie ataku" · czy po czyszczeniu zaraz padła usługa EventLog.
+
+**Krok 1 — Kto i kiedy wyczyścił log (te zdarzenia powstają Z czyszczenia):**
+```powershell
+# Security wyczyszczony: EID 1102 (jest w logu Security, zaraz po czyszczeniu)
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=1102} |
+  Select-Object TimeCreated,
+    @{n='User';e={$_.Properties[1].Value}},
+    @{n='Domain';e={$_.Properties[2].Value}}
+
+# System/Application wyczyszczony: EID 104
+Get-WinEvent -FilterHashtable @{LogName='System'; Id=104} |
+  Select-Object TimeCreated, @{n='User';e={$_.UserId}}, Message
+```
+```cmd
+:: Szybki odpowiednik w cmd (query po ID)
+wevtutil qe Security /q:"*[System[(EventID=1102)]]" /f:text /c:5
+```
+
+**Krok 2 — Zatrzymanie/restart usługi Event Log (klasyczny ruch przed czyszczeniem):**
+```powershell
+# 7035/7036 = zmiany stanu usług; filtruj po "Windows Event Log"
+Get-WinEvent -FilterHashtable @{LogName='System'; Id=7035,7036} |
+  Where-Object Message -match "Event Log" |
+  Select-Object TimeCreated, Id, Message
+```
+
+**Krok 3 — Dziura w ciągłości logu (nawet po „cichym" kasowaniu pojedynczych wpisów):**
+```powershell
+# Rosnący RecordId powinien być gęsty; nagły skok = potencjalnie usunięte wpisy.
+# Szukaj też przerw czasowych (godziny bez ŻADNEGO zdarzenia w gadatliwym logu).
+Get-WinEvent -LogName Security -MaxEvents 2000 |
+  Sort-Object RecordId |
+  Select-Object RecordId, TimeCreated |
+  Where-Object { $_.RecordId } |
+  # ręcznie obejrzyj skoki RecordId oraz luki > kilku minut w godzinach pracy
+  Format-Table -AutoSize
+```
+
+**Krok 4 — Osłabienie audytu (cichsze niż czyszczenie — zmiana polityki zamiast kasowania):**
+```powershell
+# 4719 = zmieniono politykę audytu systemu; 1100 = usługa logowania zdarzeń zamknięta
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4719,1100} |
+  Select-Object TimeCreated, Id, Message
+# Stan bieżący polityki (czy ktoś pościągał kategorie do 'No Auditing'):
+auditpol /get /category:*
+```
+
+**Krok 5 — Sysmon (jeśli wdrożony): złap SAMO polecenie czyszczące:**
+```powershell
+# Sysmon EID 1 = utworzenie procesu; łap narzędzia do czyszczenia/kasowania logów
+Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" |
+  Where-Object { $_.Id -eq 1 -and $_.Message -match "wevtutil|Clear-EventLog|Remove-EventLog|Clear-Log" } |
+  Select-Object TimeCreated, @{n='Cmd';e={($_.Message -split "`n" | Select-String 'CommandLine').Line}}
+```
+> 💎 **Wniosek do raportu (§14):** jeśli 1102/104 istnieją, ale NIE ma na nie alertu w SIEM → finding „Insufficient Logging & Monitoring". Rekomendacja: forwarding logów poza host (Windows Event Forwarding / agent SIEM) — atakujący czyści log LOKALNIE, więc kopia zdalna przeżywa; alert na 1102/104/4719; ochrona/rozmiar logu (`wevtutil sl Security /ms:1073741824`).
+
+## 11.6 Windows — wykrywanie prób AV/AMSI bypass i injection (blue-team)
+
+> Strona OBRONNA do koncepcji z §2.16: jak analityk WYKRYWA próby omijania AV/AMSI oraz process-injection. Same czujniki i EID-y — do huntu i do raportu (§14).
+
+> 🎯 **Drogowskaz — hunt na evasion:** 1) **skrypt po deobfuskacji** → PowerShell **Script Block Logging** (EID **4104**) loguje treść *rozpakowaną*, więc łapie to, co AMSI widziało. 2) **wykrycie przez sam AV** → Defender **1116/1117** (malware found/action). 3) **manipulacja AMSI** → Sysmon EID **7** (ładowanie `amsi.dll` przez nietypowy proces) + błędy integralności. 4) **injection** → Sysmon **8** (CreateRemoteThread), **10** (ProcessAccess do lsass/obcych), **25** (process tampering). 5) **podejrzane drzewo procesów** → Sysmon **1** (`winword.exe`→`powershell.exe`).
+> 💎 **Co wartościowe:** pełna, odobfuskowana komenda z 4104 · proces-rodzic wstrzykujący · to, że payload odpalił się z procesu Office · wykluczenia Defendera nadużyte jako ścieżka ataku.
+
+**Krok 1 — PowerShell Script Block Logging (najmocniejszy sygnał; loguje treść PO deobfuskacji):**
+```powershell
+# EID 4104 = wykonany blok skryptu; widzisz to, co AMSI dostało (nawet z -enc/obfuskacji)
+Get-WinEvent -LogName "Microsoft-Windows-PowerShell/Operational" |
+  Where-Object Id -eq 4104 |
+  Where-Object Message -match "FromBase64String|IEX|DownloadString|VirtualAlloc|amsi" |
+  Select-Object TimeCreated, @{n='Script';e={$_.Message}}
+```
+Włączenie na przyszłość (GPO lub rejestr):
+```cmd
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f
+:: dodatkowo: Module Logging + Transcription dla pełnej telemetrii PS
+```
+
+**Krok 2 — Defender sam coś złapał (wykrycie/akcja):**
+```powershell
+# 1116 = wykryto malware, 1117 = podjęto akcję (quarantine/remove)
+Get-WinEvent -LogName "Microsoft-Windows-Windows Defender/Operational" |
+  Where-Object Id -in 1116,1117 |
+  Select-Object TimeCreated, Id, @{n='Threat';e={$_.Properties[7].Value}}
+```
+
+**Krok 3 — Sysmon: manipulacja AMSI + injection (jeśli Sysmon wdrożony):**
+```powershell
+# EID 7 = ImageLoad: amsi.dll ładowany przez proces, który nie powinien go dotykać
+Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" |
+  Where-Object { $_.Id -eq 7 -and $_.Message -match "amsi\.dll" } |
+  Select-Object TimeCreated, @{n='Proc';e={($_.Message -split "`n" | Select-String 'Image:').Line}}
+
+# EID 8 = CreateRemoteThread, EID 10 = ProcessAccess (np. do lsass), EID 25 = process tampering
+Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" |
+  Where-Object Id -in 8,10,25 |
+  Select-Object TimeCreated, Id, Message
+```
+
+**Krok 4 — Podejrzane drzewo procesów (Office rodzi shell):**
+```powershell
+# Sysmon EID 1 = ProcessCreate; czerwona flaga: winword/excel/outlook -> powershell/cmd/wscript
+Get-WinEvent -LogName "Microsoft-Windows-Sysmon/Operational" |
+  Where-Object { $_.Id -eq 1 -and $_.Message -match "ParentImage:.*(winword|excel|outlook|mshta)" `
+                 -and $_.Message -match "Image:.*(powershell|cmd|wscript|cscript)" } |
+  Select-Object TimeCreated, Message
+```
+
+**Krok 5 — Nadużyte wykluczenia Defendera (częsty realny finding):**
+```powershell
+# Ścieżki/procesy wyłączone ze skanu = gdzie atakujący bezpiecznie odkłada payload
+Get-MpPreference | Select-Object ExclusionPath, ExclusionProcess, ExclusionExtension
+```
+> 💎 **Wniosek do raportu (§14):** brak Script Block Logging / brak Sysmona / szerokie `ExclusionPath` → finding „Insufficient Endpoint Visibility / AV Misconfiguration". Rekomendacja: włącz 4104 + Module/Transcription, wdroż Sysmon z sensowną konfiguracją (np. bazową SwiftOnSecurity), zawęź wykluczenia Defendera, włącz **ASR rules** (blokada child-process z Office, blokada obfuskowanych skryptów), forwarding do SIEM (spójne z §11.5).
 
 ---
 
