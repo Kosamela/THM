@@ -32,6 +32,7 @@ PHASE_META = {
     "14": ("#fb7185", "Report"),
     "A":  ("#8a95a5", "Keys"),
     "B":  ("#ef4444", "OSCP"),
+    "C":  ("#10b981", "Medtech"),
 }
 
 def esc(s):
@@ -77,13 +78,16 @@ def classify(hashes, txt):
     c = clean_heading(txt)
     mphase = re.match(r"^(\d{1,2})\.\s+\S", c)
     msub   = re.match(r"^(\d{1,2})\.(\d{1,2})\b", c)
-    mappx  = re.match(r"^Appendix\s+([AB])\b", c)
+    mappx  = re.match(r"^Appendix\s+([ABC])\b", c)
     mbsub  = re.match(r"^B\.(\d+)\b", c)
+    mcsub  = re.match(r"^C\.(\d+)\b", c)
     if "Spis treści" in txt or "📑" in txt:
         return ("skip",)
     if msub:
         return ("sub", txt)
     if mbsub:
+        return ("sub", txt)
+    if mcsub:
         return ("sub", txt)
     if mphase:
         return ("phase", mphase.group(1), txt)
@@ -260,7 +264,7 @@ for p in phases:
             f'<section class="card" data-text="{dt}"{cid}>{head}{body}</section>'
         )
     disp = re.sub(r"^\d+\.\s*", "", p["title"])
-    disp = re.sub(r"^Appendix\s+[AB]\s*[—-]\s*", "", disp)
+    disp = re.sub(r"^Appendix\s+[ABC]\s*[—-]\s*", "", disp)
     main_html.append(
         f'<section class="phase" id="{p["slug"]}" data-phase="{p["slug"]}" style="--hue:{p["color"]}">'
         f'<header class="phase-head">'
