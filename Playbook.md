@@ -3571,6 +3571,34 @@ cat proof.txt                       # / type proof.txt
 `BloodHound` • `xfreerdp` • ręczne PtH/PtT/PtK.
 > 🔗 Trening: PG Practice (Proving Grounds), HTB (OSCP-like list TJ_Null), TryHackMe (ścieżki AD/Offensive).
 
+## B.7 Zegar egzaminacyjny — czas i kolejność (najczęstszy powód oblania to nie brak wiedzy, tylko rabbit hole)
+
+**Struktura: 3 standalone (20 pkt/szt.) + AD-set (40 pkt). Próg 70.** Realny plan zdania: **AD (40) + 2 standalone (40)** → z zapasem.
+
+**Kolejność ataku:**
+1. **Odpal `nmap -p-` na WSZYSTKICH celach naraz na starcie** (i UDP top-ports). Skanowanie leci w tle, gdy pracujesz.
+2. **Zacznij od AD-setu** — to 40 pkt i najdłuższy łańcuch. Masz creds (assumed breach) → BloodHound od razu (§6.7). Świeży umysł = lepiej ogarniesz łańcuch.
+3. Potem **standalone** — bierz ten z najbardziej oczywistym wektorem (znana wersja → searchsploit). Nie zaczynaj od najtrudniejszego.
+
+**Time-boxing (pilnuj zegara):**
+- **Enumeracja: min. 20-30 min** zanim uznasz, że „nic nie ma". Zwykle przeoczyłeś port/vhost/UDP.
+- **Jeden wektor: max ~45-60 min.** Nie wchodzi? Zapisz gdzie jesteś i **zmień maszynę**. Wróć na świeżo.
+- **Utknąłeś na privesc: 30-45 min** → uruchom ponownie linpeas/winpeas, przeczytaj CAŁY output, sprawdź `sudo -l`/`whoami /priv` jeszcze raz.
+- **Rotuj maszyny** — świeże spojrzenie po przerwie łamie 80% blokad. Nie siedź 4h na jednej.
+
+**Sygnały rabbit hole (uciekaj):**
+- Modyfikujesz exploit 5. raz i dalej nie działa → to prawdopodobnie zła ścieżka.
+- Bruteforce trwa >20 min bez trafienia → zły wektor, nie zła lista.
+- „Ta usługa MUSI być drogą" bez dowodu → wróć do enumeracji, poszukaj czego nie widziałeś.
+
+**Higiena, która ratuje punkty:**
+- **Screenshot flagi OD RAZU** po zdobyciu (`type/cat` + `ip a`/`ipconfig` w tym samym shellu). Revert kasuje flagę — jak nie masz screena, tracisz punkty mimo roota.
+- **Notuj każdą komendę na bieżąco** (do raportu — masz 24h po, ale rób w trakcie).
+- **Metasploit: 1 maszyna w całym egzaminie.** Nie pal go na AD-secie ani „na próbę" (`check` też liczy się jako użycie).
+- **Przerwy, jedzenie, sen** — masz 23h45m właśnie po to. Zmęczony mózg tworzy rabbit hole.
+
+> 🧭 **Mantra:** enumeruj szeroko → atakuj oczywiste → time-box → rotuj → screenshot natychmiast. Punkty zbiera się z wielu maszyn częściowo, nie z jednej idealnie.
+
 ---
 
 > **Uwaga o utrzymaniu pliku:** dopisuj nowe komendy do właściwej fazy kill chain, a nie na koniec.
