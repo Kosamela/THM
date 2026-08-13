@@ -30,6 +30,7 @@ PHASE_META = {
     "12": ("#94a3b8", "Toolbox"),
     "13": ("#22d3ee", "Cloud"),
     "14": ("#fb7185", "Report"),
+    "15": ("#e879f9", "Stuck"),
     "A":  ("#8a95a5", "Keys"),
     "B":  ("#ef4444", "OSCP"),
     "C":  ("#10b981", "Medtech"),

